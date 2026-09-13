@@ -34,7 +34,7 @@ bb plugin install https://github.com/Sof-97/bb-task-plugin-workspace
 This tracks the repository's default branch. To follow tagged releases:
 
 ```sh
-bb plugin install 'git:https://github.com/Sof-97/bb-task-plugin-workspace.git@^0.1.1'
+bb plugin install 'git:https://github.com/Sof-97/bb-task-plugin-workspace.git@^0.1.2'
 bb plugin update task-workspace
 ```
 
@@ -44,17 +44,10 @@ marketplace listing is required. See [RELEASING.md](RELEASING.md).
 
 ## Local development and recovery
 
-Use Node 25.9.0 for the previously verified native test runtime. If changing
-Node versions, run a fresh `npm ci` so SQLite uses the correct ABI.
-
-```sh
-npm ci --include=dev
-bb plugin types --check .
-npm run verify
-npm run verify:distribution
-bb plugin install .
-bb plugin reload task-workspace
-```
+For new checkouts or agent threads, follow [DEVELOPMENT.md](DEVELOPMENT.md).
+The tracked `scripts/bb-dev.mjs` launcher starts an isolated BB profile, installs
+this checkout, and watches changes. [AGENTS.md](AGENTS.md) directs coding agents
+to that workflow automatically.
 
 - **Update** a local path install in place: edit sources, `npm run build`, then
   `bb plugin reload task-workspace`. `bb plugin update` applies only to managed
