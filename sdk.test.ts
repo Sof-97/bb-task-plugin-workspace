@@ -4,6 +4,10 @@ test("imports use only public SDK and declared public dependencies", () => {
   const result = experimental_scanPublicSdkOnly(process.cwd(), {
     allow: [
       /^react(?:\/.*)?$/,
+      /^react-dom(?:\/.*)?$/,
+      /^@radix-ui\/react-dialog$/,
+      /^@hugeicons\/react$/,
+      /^@hugeicons\/core-free-icons$/,
       /^vitest$/,
       /^@testing-library\/react$/,
       /^@radix-ui\/react-slot$/,

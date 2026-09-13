@@ -2888,9 +2888,34 @@ export default async function plugin(
     if (operation.state !== "awaiting-link" || !operation.threadId)
       return operation;
     try {
-      const thread = await bb.sdk.threads.get({
+      let thread = await bb.sdk.threads.get({
         threadId: operation.threadId,
       });
+      // Spawn returns before BB finishes assigning/provisioning the checkout.
+      // Only poll the saved thread; never dispatch another conversation.
+      const deadline = Date.now() + 10_000;
+      while (thread.projectId === operation.projectId) {
+        const environment = thread.environmentId
+          ? await bb.sdk.environments.get({
+              environmentId: thread.environmentId,
+            })
+          : null;
+        if (environment?.status === "ready") break;
+        if (environment?.status === "error")
+          throw new Error(
+            "BB could not prepare the conversation's checkout. Open the conversation to inspect the error, then retry linking.",
+          );
+        if (Date.now() >= deadline)
+          throw new Error(
+            "The conversation was created, but BB is still preparing its checkout. Retry linking shortly; no new conversation will be created.",
+          );
+        await new Promise((resolve) => setTimeout(resolve, 250));
+        const latest = readStart(taskId, operationId);
+        assertStartEpoch(latest, expectedEpoch);
+        if (latest.abandonedAt || latest.state !== "awaiting-link")
+          return latest;
+        thread = await bb.sdk.threads.get({ threadId: operation.threadId });
+      }
       await validateStartedThreadEnvironment(taskId, operation, thread);
       await linkValidatedThread({
         taskId,

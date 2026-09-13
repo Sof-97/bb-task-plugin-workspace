@@ -23,6 +23,17 @@ import { normalStatuses } from "./task-status";
 import { safeMarkdown } from "./markdown";
 import { Button } from "./components/ui/button";
 import { Input } from "./components/ui/input";
+import { Icon } from "./components/ui/icon";
+import {
+  Dialog,
+  DialogTrigger,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+  DialogFooter,
+  DialogClose,
+} from "./components/ui/dialog";
 import { WayfinderPanel } from "./wayfinder-view";
 
 type StartSubmission = {
@@ -116,6 +127,8 @@ function Board({ subPath }: PluginNavPanelProps) {
   const [filterProject, setFilterProject] = useState("all");
   const [query, setQuery] = useState("");
   const [showCompleted, setShowCompleted] = useState(false);
+  const [editingTitle, setEditingTitle] = useState(false);
+  const [editingDescription, setEditingDescription] = useState(false);
   const [editTitle, setEditTitle] = useState("");
   const [editDescription, setEditDescription] = useState("");
   const [nextStatus, setNextStatus] = useState<
@@ -157,6 +170,17 @@ function Board({ subPath }: PluginNavPanelProps) {
   );
   const [memoryDraftConflict, setMemoryDraftConflict] = useState(false);
   const [memoryRestoreKnown, setMemoryRestoreKnown] = useState("");
+  const [taskSection, setTaskSection] = useState("Overview");
+  const [newThreadOpen, setNewThreadOpen] = useState(false);
+  useEffect(() => {
+    setTaskSection("Overview");
+    setEditingTitle(false);
+    setEditingDescription(false);
+    setNewThreadOpen(false);
+  }, [taskId]);
+  const [enrollOpen, setEnrollOpen] = useState(false);
+  const [createOpen, setCreateOpen] = useState(false);
+  const [backupToolsOpen, setBackupToolsOpen] = useState(false);
   const [restorePath, setRestorePath] = useState("");
   const [restorePreview, setRestorePreview] = useState<Awaited<
     ReturnType<typeof rpc.call<"previewRestore">>
@@ -520,11 +544,12 @@ function Board({ subPath }: PluginNavPanelProps) {
   useEffect(() => {
     if (!taskId) return;
     const close = (event: KeyboardEvent) => {
-      if (event.key === "Escape") navigate.toPluginPanel("board");
+      if (event.key === "Escape" && !event.defaultPrevented && !newThreadOpen)
+        navigate.toPluginPanel("board");
     };
     window.addEventListener("keydown", close);
     return () => window.removeEventListener("keydown", close);
-  }, [navigate, taskId]);
+  }, [navigate, taskId, newThreadOpen]);
   async function run(action: () => Promise<unknown>) {
     setBusy(true);
     setError("");
@@ -601,8 +626,10 @@ function Board({ subPath }: PluginNavPanelProps) {
             `Start operation is ${result.state}; the composer draft is retained.`,
         );
       delete startSubmissions.current[originTask];
-      if (stillSelected() && result.threadId)
+      if (stillSelected() && result.threadId) {
+        setNewThreadOpen(false);
         navigate.toThread(result.threadId);
+      }
     } catch (value) {
       let durable: StartOperation | null = null;
       try {
@@ -621,6 +648,7 @@ function Board({ subPath }: PluginNavPanelProps) {
             ...current,
             [originTask]: "Start operation is linked.",
           }));
+          setNewThreadOpen(false);
           navigate.toThread(durable.threadId);
         }
         return;
@@ -637,6 +665,32 @@ function Board({ subPath }: PluginNavPanelProps) {
         durable?.error ??
           (value instanceof Error ? value.message : String(value)),
       );
+    }
+  }
+  async function saveDetail(field: "title" | "description") {
+    if (!selected) return;
+    const originSelection = selectionGeneration.current;
+    const updated = await rpc.call("updateDetails", {
+      id: selected.id,
+      datasetEpoch: draftEpoch,
+      expectedRevision: draftRevision,
+      title: field === "title" ? editTitle : selected.title,
+      description:
+        field === "description" ? editDescription : selected.description,
+    });
+    acceptMutation(updated, selected.id, draftEpoch, originSelection);
+    if (
+      selectedTaskRef.current === selected.id &&
+      datasetEpochRef.current === draftEpoch &&
+      selectionGeneration.current === originSelection
+    ) {
+      if (field === "title") {
+        setEditTitle(updated.title);
+        setEditingTitle(false);
+      } else {
+        setEditDescription(updated.description);
+        setEditingDescription(false);
+      }
     }
   }
   function acceptMutation(
@@ -740,284 +794,200 @@ function Board({ subPath }: PluginNavPanelProps) {
       tabIndex={-1}
       className="relative h-full overflow-auto p-4 text-foreground outline-none"
     >
-      <h1 className="text-xl font-semibold">Task workspace</h1>
-      {data?.backup && (
-        <div
-          className="my-2 flex flex-wrap items-center gap-2 rounded border border-border p-2 text-sm"
-          aria-label="Backup health"
-        >
-          <span role="status">
-            {data.backup.state === "healthy" &&
-              `Backup healthy · last success ${data.backup.lastSuccessfulAt ?? "unknown"} (${data.backup.dailyArchiveCount} daily)`}
-            {data.backup.state === "degraded" &&
-              `Backup failed · ${data.backup.error ?? "unknown error"}`}
-            {data.backup.state === "not-yet-created" && "No daily backup yet"}
-          </span>
-          {data.backup.warning && (
-            <span className="text-destructive" role="alert">
-              {data.backup.warning}
-            </span>
-          )}
-          <Button
-            disabled={busy}
-            className="ml-auto"
-            onClick={(event) => {
-              event.preventDefault();
-              void run(async () => {
-                await rpc.call("retryDailyBackup", null);
-              });
-            }}
-          >
-            Retry daily backup
-          </Button>
-        </div>
-      )}
-      {data && (
-        <details className="my-2 rounded border border-border p-2 text-sm">
-          <summary>Restore a dataset archive</summary>
-          <p className="mt-2">
-            Restoring replaces the entire current dataset — every task,
-            description, memory, link, preparation and pending operation — with
-            the archive contents. Nothing is merged. Export a fresh backup first
-            if the current data still matters.
-          </p>
-          <form
-            className="mt-2 flex flex-wrap items-center gap-2"
-            onSubmit={(event) => {
-              event.preventDefault();
-              void run(async () => {
-                setRestoreMessage("");
-                const request = ++restoreGeneration.current;
-                const originEpoch = datasetEpochRef.current;
-                const path = restorePath;
-                const preview = await rpc.call("previewRestore", { path });
-                if (
-                  request !== restoreGeneration.current ||
-                  originEpoch !== datasetEpochRef.current ||
-                  preview.current.datasetId !== originEpoch
-                )
-                  return;
-                restorePreviewPath.current = path;
-                setRestorePreview(preview);
-              });
-            }}
-          >
-            <Input
-              aria-label="Archive path"
-              className="min-w-64 flex-1"
-              placeholder="/absolute/path/to/archive.task-workspace.json"
-              value={restorePath}
-              onChange={(event) => {
-                restoreGeneration.current += 1;
-                restorePreviewPath.current = "";
-                setRestorePath(event.target.value);
-                setRestorePreview(null);
-              }}
-            />
-            <Button type="submit" disabled={busy || !restorePath.trim()}>
-              Preview archive
-            </Button>
-          </form>
-          {restorePreview && (
-            <div
-              className="mt-2 rounded border border-border p-2"
-              role="status"
-              aria-label="Restore preview"
-            >
-              <p>
-                Archive captured {restorePreview.createdAt} · schema{" "}
-                {restorePreview.schemaVersion} · source dataset{" "}
-                {restorePreview.source.datasetId} on host{" "}
-                {restorePreview.source.hostId}
-              </p>
-              <p>
-                Contains {restorePreview.counts.tasks} tasks,{" "}
-                {restorePreview.counts.enrollments} enrollments,{" "}
-                {restorePreview.counts.memories} memory files,{" "}
-                {restorePreview.counts.records} records.
-              </p>
-              {restorePreview.warnings.map((warning) => (
-                <p key={warning} role="alert" className="text-destructive">
-                  {warning}
+      <header className="mb-4 flex flex-wrap items-center justify-between gap-3">
+        <h1 className="text-xl font-semibold">Task workspace</h1>
+        <div className="flex flex-wrap gap-2">
+          <Dialog open={enrollOpen} onOpenChange={setEnrollOpen}>
+            <DialogTrigger asChild>
+              <Button type="button" variant="outline" disabled={!data}>
+                Enroll project
+              </Button>
+            </DialogTrigger>
+            <DialogContent className="max-h-[85dvh] overflow-y-auto">
+              <DialogHeader>
+                <DialogTitle>Enroll a project</DialogTitle>
+                <DialogDescription>
+                  Choose a project and a prefix for its task identifiers.
+                </DialogDescription>
+              </DialogHeader>
+              {error && (
+                <p role="alert" className="text-destructive">
+                  {error}
                 </p>
-              ))}
-              <p>
-                Restoring replaces all {restorePreview.current.tasks} current
-                tasks with the {restorePreview.counts.tasks} archived tasks.
-                Sessions holding pre-restore tokens must reread; restored
-                incomplete operations are quarantined for inspection.
-              </p>
-              <Button
-                className="mt-2"
-                disabled={busy}
-                onClick={(event) => {
+              )}
+              {data?.discoveryError && (
+                <p role="alert">{data.discoveryError}</p>
+              )}
+              <form
+                className="flex flex-col gap-3"
+                onSubmit={(event) => {
                   event.preventDefault();
                   void run(async () => {
-                    const result = await rpc.call("restoreDataset", {
-                      path: restorePreviewPath.current,
-                      expectedDigest: restorePreview.digest,
-                      currentDatasetEpoch: restorePreview.current.datasetId,
-                      confirmReplace: true,
-                    });
-                    setRestorePreview(null);
-                    setRestoreMessage(
-                      `Restored ${result.restoredCounts.tasks} tasks; new dataset epoch ${result.datasetEpoch}. Protective copy retained until recovery is confirmed.`,
+                    const candidate = data?.candidates.find(
+                      (item) => item.sourceId === source,
                     );
+                    if (!candidate) throw Error("Select a main repository.");
+                    const enrolled = await rpc.call("enroll", {
+                      projectId: candidate.projectId,
+                      sourceId: source,
+                      prefix,
+                    });
+                    setProject(enrolled.id);
+                    setPrefix("");
+                    setEnrollOpen(false);
                   });
                 }}
               >
-                Restore dataset
+                <select
+                  aria-label="Main repository"
+                  className="max-w-full rounded border border-border bg-background p-2"
+                  value={source}
+                  onChange={(event) => setSource(event.target.value)}
+                >
+                  <option value="">
+                    Select a BB project and main repository
+                  </option>
+                  {data?.candidates.map((item) => (
+                    <option key={item.sourceId} value={item.sourceId}>
+                      {item.name} — {item.repository}
+                    </option>
+                  ))}
+                </select>
+                <Input
+                  aria-label="Task prefix"
+                  placeholder="Prefix, e.g. HOUSE"
+                  value={prefix}
+                  onChange={(event) => setPrefix(event.target.value)}
+                  className="w-full"
+                />
+                <Button disabled={busy || !source || !prefix}>Enroll</Button>
+              </form>
+            </DialogContent>
+          </Dialog>
+          <Dialog open={createOpen} onOpenChange={setCreateOpen}>
+            <DialogTrigger asChild>
+              <Button type="button" disabled={!data}>
+                Create task
               </Button>
-            </div>
-          )}
-          {restoreMessage && <p role="status">{restoreMessage}</p>}
-        </details>
-      )}
-      {error && (
+            </DialogTrigger>
+            <DialogContent className="max-h-[85dvh] overflow-y-auto sm:max-w-2xl">
+              <DialogHeader>
+                <DialogTitle>Create task</DialogTitle>
+                <DialogDescription>
+                  Add a task to an enrolled project's Inbox.
+                </DialogDescription>
+              </DialogHeader>
+              {error && (
+                <p role="alert" className="text-destructive">
+                  {error}
+                </p>
+              )}
+              {data?.enrollments.length === 0 && (
+                <p className="text-sm text-muted-foreground">
+                  Enroll a project from the board before creating your first
+                  task.
+                </p>
+              )}
+
+              <form
+                className="flex flex-col gap-3"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  void run(async () => {
+                    const created = await rpc.call("create", {
+                      enrollmentId: project,
+                      title,
+                      description,
+                    });
+                    setCreateOpen(false);
+                    setTitle("");
+                    setDescription("");
+                    navigate.toPluginPanel("board", { subPath: created.id });
+                  });
+                }}
+              >
+                <label>
+                  Project{" "}
+                  <select
+                    aria-label="Capture project"
+                    className="ml-2 rounded border border-border bg-background p-2"
+                    value={project}
+                    onChange={(event) => setProject(event.target.value)}
+                  >
+                    <option value="">Select enrolled project</option>
+                    {data?.enrollments.map((item) => (
+                      <option
+                        key={item.id}
+                        value={item.id}
+                        disabled={item.availability !== "available"}
+                      >
+                        {item.name} ({item.prefix}) — {item.availability}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <Input
+                  aria-label="Task title"
+                  placeholder="What needs doing?"
+                  maxLength={200}
+                  value={title}
+                  onChange={(event) => setTitle(event.target.value)}
+                />
+                <textarea
+                  aria-label="Markdown description"
+                  placeholder="Description (Markdown)"
+                  className="min-h-64 max-h-[60vh] resize-y rounded border border-border bg-background p-3"
+                  maxLength={65536}
+                  value={description}
+                  onChange={(event) => setDescription(event.target.value)}
+                />
+                <Button
+                  disabled={busy || !project || !title.trim()}
+                  className="self-start"
+                >
+                  Create Inbox task
+                </Button>
+              </form>
+            </DialogContent>
+          </Dialog>
+        </div>
+      </header>
+      {error && !enrollOpen && !createOpen && !backupToolsOpen && (
         <p role="alert" className="my-2 text-destructive">
           {error}
         </p>
       )}
       {data?.discoveryError && <p role="alert">{data.discoveryError}</p>}
-      <details
-        className="my-3 rounded border border-border p-3"
-        open={data?.enrollments.length === 0}
-      >
-        <summary>Enroll a project</summary>
-        <form
-          className="mt-2 flex flex-wrap gap-2"
-          onSubmit={(event) => {
-            event.preventDefault();
-            void run(async () => {
-              const candidate = data?.candidates.find(
-                (item) => item.sourceId === source,
-              );
-              if (!candidate) throw Error("Select a main repository.");
-              const enrolled = await rpc.call("enroll", {
-                projectId: candidate.projectId,
-                sourceId: source,
-                prefix,
-              });
-              setProject(enrolled.id);
-              setPrefix("");
-            });
-          }}
-        >
-          <select
-            aria-label="Main repository"
-            className="max-w-full rounded border border-border bg-background p-2"
-            value={source}
-            onChange={(event) => setSource(event.target.value)}
-          >
-            <option value="">Select a BB project and main repository</option>
-            {data?.candidates.map((item) => (
-              <option key={item.sourceId} value={item.sourceId}>
-                {item.name} — {item.repository}
-              </option>
-            ))}
-          </select>
-          <Input
-            aria-label="Task prefix"
-            placeholder="Prefix, e.g. HOUSE"
-            value={prefix}
-            onChange={(event) => setPrefix(event.target.value)}
-            className="w-48"
-          />
-          <Button disabled={busy || !source || !prefix}>Enroll</Button>
-        </form>
-      </details>
-      <form
-        className="my-4 flex max-w-2xl flex-col gap-2"
-        onSubmit={(event) => {
-          event.preventDefault();
-          void run(async () => {
-            const created = await rpc.call("create", {
-              enrollmentId: project,
-              title,
-              description,
-            });
-            setTitle("");
-            setDescription("");
-            navigate.toPluginPanel("board", { subPath: created.id });
-          });
-        }}
-      >
-        <label>
-          Project{" "}
-          <select
-            aria-label="Capture project"
-            className="ml-2 rounded border border-border bg-background p-2"
-            value={project}
-            onChange={(event) => setProject(event.target.value)}
-          >
-            <option value="">Select enrolled project</option>
-            {data?.enrollments.map((item) => (
-              <option
-                key={item.id}
-                value={item.id}
-                disabled={item.availability !== "available"}
-              >
-                {item.name} ({item.prefix}) — {item.availability}
-              </option>
-            ))}
-          </select>
-        </label>
-        <Input
-          aria-label="Task title"
-          placeholder="What needs doing?"
-          maxLength={200}
-          value={title}
-          onChange={(event) => setTitle(event.target.value)}
-        />
-        <textarea
-          aria-label="Markdown description"
-          placeholder="Description (Markdown)"
-          className="min-h-20 rounded border border-border bg-background p-2"
-          maxLength={65536}
-          value={description}
-          onChange={(event) => setDescription(event.target.value)}
-        />
-        <Button
-          disabled={busy || !project || !title.trim()}
-          className="self-start"
-        >
-          Create Inbox task
-        </Button>
-      </form>
       <div
-        className="my-3 flex flex-wrap items-end gap-3 rounded border border-border p-3"
+        className="mb-4 flex flex-wrap items-center gap-2"
         aria-label="Board filters"
       >
-        <label>
-          Project filter{" "}
-          <select
-            aria-label="Project filter"
-            className="block rounded border border-border bg-background p-2"
-            value={filterProject}
-            onChange={(event) => setFilterProject(event.target.value)}
-          >
-            <option value="all">All projects</option>
-            {data?.enrollments.map((item) => (
-              <option key={item.id} value={item.id}>
-                {item.name}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label>
-          Search{" "}
-          <Input
-            aria-label="Search tasks"
-            value={query}
-            onChange={(event) => setQuery(event.target.value)}
-          />
-        </label>
-        <label className="flex min-h-10 items-center gap-2">
+        <select
+          aria-label="Project filter"
+          className="h-9 min-w-0 max-w-full rounded-md border border-input bg-background px-3 text-sm sm:max-w-64"
+          value={filterProject}
+          onChange={(event) => setFilterProject(event.target.value)}
+        >
+          <option value="all">All projects</option>
+          {data?.enrollments.map((item) => (
+            <option key={item.id} value={item.id}>
+              {item.name}
+            </option>
+          ))}
+        </select>
+        <Input
+          aria-label="Search tasks"
+          placeholder="Search tasks…"
+          className="min-w-40 flex-1 sm:max-w-sm"
+          value={query}
+          onChange={(event) => setQuery(event.target.value)}
+        />
+        <label className="flex min-h-9 cursor-pointer items-center gap-2 whitespace-nowrap px-2 text-sm text-muted-foreground sm:ml-auto">
           <input
             type="checkbox"
             checked={showCompleted}
             onChange={(event) => setShowCompleted(event.target.checked)}
-          />{" "}
+          />
           Show Completed
         </label>
       </div>
@@ -1082,10 +1052,189 @@ function Board({ subPath }: PluginNavPanelProps) {
           )}
         </div>
       </section>
+      {data && (
+        <footer className="mt-6 flex justify-end border-t border-border pt-3">
+          <Dialog open={backupToolsOpen} onOpenChange={setBackupToolsOpen}>
+            <DialogTrigger asChild>
+              <Button type="button" variant="outline">
+                Backup and restore
+              </Button>
+            </DialogTrigger>
+            <DialogContent className="max-h-[85dvh] overflow-y-auto sm:max-w-2xl">
+              <DialogHeader>
+                <DialogTitle>Backup and restore</DialogTitle>
+                <DialogDescription>
+                  Manage daily backups or restore your workspace from an
+                  archive.
+                </DialogDescription>
+              </DialogHeader>
+              {error && (
+                <p role="alert" className="text-destructive">
+                  {error}
+                </p>
+              )}
+              {data?.backup && (
+                <div
+                  className="my-2 flex flex-wrap items-center gap-2 rounded border border-border p-2 text-sm"
+                  aria-label="Backup health"
+                >
+                  <span role="status">
+                    {data.backup.state === "healthy" &&
+                      `Backup healthy · last success ${data.backup.lastSuccessfulAt ?? "unknown"} (${data.backup.dailyArchiveCount} daily)`}
+                    {data.backup.state === "degraded" &&
+                      `Backup failed · ${data.backup.error ?? "unknown error"}`}
+                    {data.backup.state === "not-yet-created" &&
+                      "No daily backup yet"}
+                  </span>
+                  {data.backup.warning && (
+                    <span className="text-destructive" role="alert">
+                      {data.backup.warning}
+                    </span>
+                  )}
+                  <Button
+                    disabled={busy}
+                    className="ml-auto"
+                    onClick={(event) => {
+                      event.preventDefault();
+                      void run(async () => {
+                        await rpc.call("retryDailyBackup", null);
+                      });
+                    }}
+                  >
+                    Retry daily backup
+                  </Button>
+                </div>
+              )}
+              {data && (
+                <section
+                  className="rounded border border-border p-3 text-sm"
+                  aria-label="Restore dataset"
+                >
+                  <h3 className="font-semibold">Restore a dataset archive</h3>
+                  <p className="mt-2">
+                    Restoring replaces the entire current dataset — every task,
+                    description, memory, link, preparation and pending operation
+                    — with the archive contents. Nothing is merged. Export a
+                    fresh backup first if the current data still matters.
+                  </p>
+                  <form
+                    className="mt-2 flex flex-wrap items-center gap-2"
+                    onSubmit={(event) => {
+                      event.preventDefault();
+                      void run(async () => {
+                        setRestoreMessage("");
+                        const request = ++restoreGeneration.current;
+                        const originEpoch = datasetEpochRef.current;
+                        const path = restorePath;
+                        const preview = await rpc.call("previewRestore", {
+                          path,
+                        });
+                        if (
+                          request !== restoreGeneration.current ||
+                          originEpoch !== datasetEpochRef.current ||
+                          preview.current.datasetId !== originEpoch
+                        )
+                          return;
+                        restorePreviewPath.current = path;
+                        setRestorePreview(preview);
+                      });
+                    }}
+                  >
+                    <Input
+                      aria-label="Archive path"
+                      className="min-w-64 flex-1"
+                      placeholder="/absolute/path/to/archive.task-workspace.json"
+                      value={restorePath}
+                      onChange={(event) => {
+                        restoreGeneration.current += 1;
+                        restorePreviewPath.current = "";
+                        setRestorePath(event.target.value);
+                        setRestorePreview(null);
+                      }}
+                    />
+                    <Button
+                      type="submit"
+                      disabled={busy || !restorePath.trim()}
+                    >
+                      Preview archive
+                    </Button>
+                  </form>
+                  {restorePreview && (
+                    <div
+                      className="mt-2 rounded border border-border p-2"
+                      role="status"
+                      aria-label="Restore preview"
+                    >
+                      <p>
+                        Archive captured {restorePreview.createdAt} · schema{" "}
+                        {restorePreview.schemaVersion} · source dataset{" "}
+                        {restorePreview.source.datasetId} on host{" "}
+                        {restorePreview.source.hostId}
+                      </p>
+                      <p>
+                        Contains {restorePreview.counts.tasks} tasks,{" "}
+                        {restorePreview.counts.enrollments} enrollments,{" "}
+                        {restorePreview.counts.memories} memory files,{" "}
+                        {restorePreview.counts.records} records.
+                      </p>
+                      {restorePreview.warnings.map((warning) => (
+                        <p
+                          key={warning}
+                          role="alert"
+                          className="text-destructive"
+                        >
+                          {warning}
+                        </p>
+                      ))}
+                      <p>
+                        Restoring replaces all {restorePreview.current.tasks}{" "}
+                        current tasks with the {restorePreview.counts.tasks}{" "}
+                        archived tasks. Sessions holding pre-restore tokens must
+                        reread; restored incomplete operations are quarantined
+                        for inspection.
+                      </p>
+                      <Button
+                        className="mt-2"
+                        disabled={busy}
+                        onClick={(event) => {
+                          event.preventDefault();
+                          void run(async () => {
+                            const result = await rpc.call("restoreDataset", {
+                              path: restorePreviewPath.current,
+                              expectedDigest: restorePreview.digest,
+                              currentDatasetEpoch:
+                                restorePreview.current.datasetId,
+                              confirmReplace: true,
+                            });
+                            setRestorePreview(null);
+                            setRestoreMessage(
+                              `Restored ${result.restoredCounts.tasks} tasks; new dataset epoch ${result.datasetEpoch}. Protective copy retained until recovery is confirmed.`,
+                            );
+                          });
+                        }}
+                      >
+                        Restore dataset
+                      </Button>
+                    </div>
+                  )}
+                  {restoreMessage && <p role="status">{restoreMessage}</p>}
+                </section>
+              )}
+              <DialogFooter>
+                <DialogClose asChild>
+                  <Button type="button" variant="outline">
+                    Done
+                  </Button>
+                </DialogClose>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
+        </footer>
+      )}
       {taskId && data && !selected && (
         <aside
           aria-label="Task details"
-          className="absolute inset-y-0 right-0 z-10 w-full max-w-xl border-l border-border bg-background p-5 shadow-xl"
+          className="absolute inset-y-0 right-0 z-10 w-full max-w-5xl border-l border-border bg-background p-5 shadow-xl"
         >
           <Button onClick={() => navigate.toPluginPanel("board")}>
             Back to board
@@ -1101,842 +1250,888 @@ function Board({ subPath }: PluginNavPanelProps) {
           tabIndex={-1}
           role="dialog"
           aria-label="Task details"
-          className="absolute inset-y-0 right-0 z-10 w-full max-w-xl overflow-y-auto border-l border-border bg-background p-5 shadow-xl outline-none"
+          className="absolute inset-y-0 right-0 z-10 w-full max-w-5xl overflow-y-auto border-l border-border bg-background p-5 shadow-xl outline-none"
         >
-          <Button onClick={() => navigate.toPluginPanel("board")}>
-            Back to board
-          </Button>
-          <p className="mt-4">
-            {selected.displayId} · {selected.status}
-          </p>
-          <p className="text-sm text-muted-foreground">
-            Latest change: {selected.attribution} at {selected.attributionAt}
-          </p>
-          {draftConflict && (
-            <div
-              role="alert"
-              className="my-3 rounded border border-destructive p-3"
-            >
-              <p>This task changed elsewhere. Your draft is preserved.</p>
-              <div className="mt-2 flex flex-wrap gap-2">
-                <Button
-                  type="button"
-                  onClick={() => loadDraft(selected, datasetEpoch)}
-                >
-                  Reread and discard local draft
-                </Button>
-                <Button
-                  type="button"
-                  variant="outline"
-                  onClick={() => {
-                    setDraftRevision(selected.revision);
-                    setDraftEpoch(datasetEpoch);
-                    setBaseDraftValue(taskDraftValue(selected));
-                    setDraftConflict(false);
-                  }}
-                >
-                  Rebase draft on latest revision
-                </Button>
+          <div className="sticky -top-5 z-10 -mx-5 -mt-5 border-b border-border bg-background px-5 pt-4">
+            <div className="flex items-center justify-between gap-3">
+              <div className="min-w-0 flex-1">
+                <p className="text-sm text-muted-foreground">
+                  {selected.displayId} · {selected.status}
+                </p>
+                {editingTitle ? (
+                  <form
+                    className="mt-2 flex flex-wrap items-center gap-2"
+                    onSubmit={(event) => {
+                      event.preventDefault();
+                      void run(() => saveDetail("title"));
+                    }}
+                  >
+                    <Input
+                      autoFocus
+                      aria-label="Edit title"
+                      className="min-w-0 flex-1"
+                      value={editTitle}
+                      maxLength={200}
+                      onChange={(event) => setEditTitle(event.target.value)}
+                    />
+                    <Button disabled={busy || !editTitle.trim()}>
+                      Save title
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      disabled={busy}
+                      onClick={() => {
+                        setEditTitle(selected.title);
+                        setEditingTitle(false);
+                      }}
+                    >
+                      Cancel title edit
+                    </Button>
+                  </form>
+                ) : (
+                  <div className="mt-1 flex items-start gap-2">
+                    <h2 className="break-words text-xl font-semibold">
+                      {selected.title}
+                    </h2>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon"
+                      aria-label="Edit title"
+                      onClick={() => setEditingTitle(true)}
+                    >
+                      <Icon name="Edit" />
+                    </Button>
+                  </div>
+                )}
               </div>
-            </div>
-          )}
-          <form
-            className="mt-4 grid gap-2"
-            onSubmit={(event) => {
-              event.preventDefault();
-              const originSelection = selectionGeneration.current;
-              void run(async () => {
-                const updated = await rpc.call("updateDetails", {
-                  id: selected.id,
-                  datasetEpoch: draftEpoch,
-                  expectedRevision: draftRevision,
-                  title: editTitle,
-                  description: editDescription,
-                });
-                acceptMutation(
-                  updated,
-                  selected.id,
-                  draftEpoch,
-                  originSelection,
-                );
-              });
-            }}
-          >
-            <label>
-              Title{" "}
-              <Input
-                aria-label="Edit title"
-                value={editTitle}
-                maxLength={200}
-                onChange={(event) => setEditTitle(event.target.value)}
-              />
-            </label>
-            <label>
-              Description{" "}
-              <textarea
-                aria-label="Edit Markdown description"
-                className="block min-h-32 w-full rounded border border-border bg-background p-2"
-                value={editDescription}
-                maxLength={65536}
-                onChange={(event) => setEditDescription(event.target.value)}
-              />
-            </label>
-            <Button
-              disabled={busy || !editTitle.trim()}
-              className="justify-self-start"
-            >
-              Save details
-            </Button>
-          </form>
-          <h3 className="mt-6 font-semibold">Preview</h3>
-          <Markdown
-            content={safeMarkdown(selected.description || "_No description._")}
-          />
-          <WayfinderPanel
-            key={selected.id}
-            task={selected}
-            datasetEpoch={datasetEpoch}
-          />
-          <form
-            className="mt-6 grid gap-2"
-            onSubmit={(event) => {
-              event.preventDefault();
-              const originSelection = selectionGeneration.current;
-              void run(async () => {
-                const updated = await rpc.call("setStatus", {
-                  id: selected.id,
-                  datasetEpoch: draftEpoch,
-                  expectedRevision: draftRevision,
-                  status: nextStatus,
-                  blockerReason:
-                    nextStatus === "Blocked" ? blockerReason : null,
-                });
-                if (
-                  selectedTaskRef.current === selected.id &&
-                  selectionGeneration.current === originSelection
-                ) {
-                  setNextStatus(updated.status);
-                  setBlockerReason(updated.blockerReason ?? "");
-                }
-                acceptMutation(
-                  updated,
-                  selected.id,
-                  draftEpoch,
-                  originSelection,
-                );
-              });
-            }}
-          >
-            <h3 className="font-semibold">Manual status</h3>
-            <label>
-              Move to stage{" "}
-              <select
-                aria-label="Move to stage"
-                className="block rounded border border-border bg-background p-2"
-                value={nextStatus}
-                onChange={(event) =>
-                  setNextStatus(event.target.value as typeof nextStatus)
-                }
+              <Button
+                variant="outline"
+                onClick={() => navigate.toPluginPanel("board")}
               >
-                {normalStatuses.map((stage) => (
-                  <option key={stage}>{stage}</option>
-                ))}
-                <option>Blocked</option>
-              </select>
-            </label>
-            {nextStatus === "Blocked" && (
-              <label>
-                Required blocker reason{" "}
-                <textarea
-                  aria-label="Required blocker reason"
-                  className="block min-h-20 w-full rounded border border-border bg-background p-2"
-                  value={blockerReason}
-                  maxLength={2000}
-                  onChange={(event) => setBlockerReason(event.target.value)}
-                  required
-                />
-              </label>
-            )}
-            {selected.status === "Blocked" && nextStatus !== "Blocked" && (
-              <p>
-                This explicitly unblocks to {nextStatus}; no previous stage is
-                inferred.
-              </p>
-            )}
-            <Button
-              disabled={
-                busy || (nextStatus === "Blocked" && !blockerReason.trim())
-              }
-              className="justify-self-start"
+                Back to board
+              </Button>
+            </div>
+            <nav
+              aria-label="Task sections"
+              className="mt-4 flex gap-1 overflow-x-auto pb-3"
             >
-              Apply status
-            </Button>
-          </form>
-          <form
-            className="mt-6 grid gap-3"
-            onSubmit={(event) => {
-              event.preventDefault();
-              const originSelection = selectionGeneration.current;
-              void run(async () => {
-                const updated = await rpc.call("replaceRelationships", {
-                  id: selected.id,
-                  datasetEpoch: draftEpoch,
-                  expectedRevision: draftRevision,
-                  dependencyIds,
-                  blockerTaskIds,
-                });
-                acceptMutation(
-                  updated,
-                  selected.id,
-                  draftEpoch,
-                  originSelection,
-                );
-              });
-            }}
-          >
-            <fieldset>
-              <legend className="font-semibold">Depends on</legend>
-              {(data?.tasks ?? [])
-                .filter((task) => task.id !== selected.id)
-                .map((task) =>
-                  relationshipOption(task, dependencyIds, setDependencyIds),
-                )}
-            </fieldset>
-            <fieldset>
-              <legend className="font-semibold">Blocker references</legend>
-              <p className="text-sm text-muted-foreground">
-                Context only; these do not change status.
-              </p>
-              {(data?.tasks ?? [])
-                .filter((task) => task.id !== selected.id)
-                .map((task) =>
-                  relationshipOption(task, blockerTaskIds, setBlockerTaskIds),
-                )}
-            </fieldset>
-            {selected.dependencyCycle && (
-              <p role="alert" className="text-destructive">
-                This task participates in a dependency cycle. Status and branch
-                placement remain manual.
-              </p>
-            )}
-            <Button disabled={busy} className="justify-self-start">
-              Save relationships
-            </Button>
-          </form>
-          <form
-            className="mt-6 grid gap-2"
-            onSubmit={(event) => {
-              event.preventDefault();
-              const paths = pathLines
-                .split("\n")
-                .filter((line) => line.trim())
-                .map((line, index) => {
-                  const separator = line.indexOf("|");
-                  const label =
-                    separator >= 0 ? line.slice(0, separator).trim() : "";
-                  const path = (
-                    separator >= 0 ? line.slice(separator + 1) : line
-                  ).trim();
-                  const previous = selected.paths[index];
-                  return {
-                    ...(previous ? { id: previous.id } : {}),
-                    path,
-                    label: label || null,
-                  };
-                });
-              const originSelection = selectionGeneration.current;
-              void run(async () => {
-                const updated = await rpc.call("replacePaths", {
-                  id: selected.id,
-                  datasetEpoch: draftEpoch,
-                  expectedRevision: draftRevision,
-                  paths,
-                });
-                acceptMutation(
-                  updated,
-                  selected.id,
-                  draftEpoch,
-                  originSelection,
-                );
-              });
-            }}
-          >
-            <h3 className="font-semibold">Attached path references</h3>
-            <p className="text-sm text-muted-foreground">
-              One per line as label | path. Contents are never imported or
-              fetched.
-            </p>
-            <textarea
-              aria-label="Attached path references"
-              className="min-h-24 rounded border border-border bg-background p-2 font-mono text-sm"
-              value={pathLines}
-              onChange={(event) => setPathLines(event.target.value)}
-            />
-            <Button disabled={busy} className="justify-self-start">
-              Save paths
-            </Button>
-          </form>
-          <section className="mt-6 grid gap-3 rounded border border-border p-3">
-            <h3 className="font-semibold">Repository preparation</h3>
-            {repositoryConflict && (
+              {["Overview", "Threads", "Memory", "Advanced"].map((section) => (
+                <Button
+                  key={section}
+                  type="button"
+                  variant={taskSection === section ? "secondary" : "ghost"}
+                  aria-pressed={taskSection === section}
+                  onClick={() => setTaskSection(section)}
+                >
+                  {section}
+                </Button>
+              ))}
+            </nav>
+          </div>
+          <div hidden={taskSection !== "Overview"}>
+            {draftConflict && (
               <div
                 role="alert"
-                className="rounded border border-destructive p-3"
+                className="my-3 rounded border border-destructive p-3"
               >
-                <p>
-                  Repository preparation changed elsewhere. Your branch draft
-                  and its original epoch/revision are preserved.
-                </p>
+                <p>This task changed elsewhere. Your draft is preserved.</p>
                 <div className="mt-2 flex flex-wrap gap-2">
                   <Button
                     type="button"
-                    onClick={() => loadRepositoryDraft(selected, datasetEpoch)}
+                    onClick={() => loadDraft(selected, datasetEpoch)}
                   >
-                    Reread and discard repository draft
+                    Reread and discard local draft
                   </Button>
                   <Button
                     type="button"
                     variant="outline"
                     onClick={() => {
-                      const preparation = selected.repositoryPreparation;
-                      const serverAction = preparation.parentBranchName
-                        ? "associate-stacked"
-                        : preparation.branchName
-                          ? "associate-independent"
-                          : "create-independent";
-                      setRepositoryDraftRevision(preparation.revision);
-                      setRepositoryDraftEpoch(datasetEpoch);
-                      setRepositoryBaseValue(
-                        repositoryDraftValue(
-                          preparation.environmentId ?? "",
-                          preparation.branchName ?? "",
-                          preparation.parentBranchName ?? "",
-                          serverAction,
-                        ),
-                      );
-                      setRepositoryConflict(false);
+                      setDraftRevision(selected.revision);
+                      setDraftEpoch(datasetEpoch);
+                      setBaseDraftValue(taskDraftValue(selected));
+                      setDraftConflict(false);
                     }}
                   >
-                    Rebase repository draft on latest state
+                    Rebase draft on latest revision
                   </Button>
                 </div>
               </div>
             )}
-            <dl className="grid gap-1 text-sm">
-              <div>
-                <dt className="font-medium">Project</dt>
-                <dd>{selected.repositoryPreparation.projectId}</dd>
+            <section className="mt-4">
+              <div className="mb-2 flex items-center justify-between gap-2">
+                <h3 className="font-semibold">Description</h3>
+                {!editingDescription && (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    aria-label="Edit description"
+                    onClick={() => setEditingDescription(true)}
+                  >
+                    <Icon name="Edit" />
+                  </Button>
+                )}
               </div>
-              <div>
-                <dt className="font-medium">Host</dt>
-                <dd>{selected.repositoryPreparation.hostId}</dd>
-              </div>
-              <div>
-                <dt className="font-medium">Main repository</dt>
-                <dd className="break-all">
-                  {selected.repositoryPreparation.repository}
-                </dd>
-              </div>
-              <div>
-                <dt className="font-medium">Selected BB environment</dt>
-                <dd>
-                  {selected.repositoryPreparation.environmentId ??
-                    "Not selected"}
-                </dd>
-              </div>
-              <div>
-                <dt className="font-medium">Exact task branch</dt>
-                <dd>
-                  {selected.repositoryPreparation.branchName ?? "Not prepared"}
-                </dd>
-              </div>
-            </dl>
-            <div
-              role="status"
-              className="rounded border border-border p-2 text-sm"
-            >
-              <p>
-                <strong>
-                  {selected.repositoryPreparation.observation.state}
-                </strong>
-              </p>
-              <p>{selected.repositoryPreparation.observation.message}</p>
-              {selected.repositoryPreparation.observation
-                .combinedWorkingCopy && (
-                <p>
-                  Combined working copy:{" "}
-                  {selected.repositoryPreparation.observation
-                    .combinedWorkingCopy.hasChanges
-                    ? `${selected.repositoryPreparation.observation.combinedWorkingCopy.changeCount} tracked or untracked change(s)`
-                    : "no tracked or untracked changes reported"}
-                  . Branch preparation neither assigns nor snapshots these
-                  bytes.
-                </p>
-              )}
-            </div>
-            <form
-              className="grid gap-2"
-              onSubmit={(event) => {
-                event.preventDefault();
-                const originSelection = selectionGeneration.current;
-                void run(async () => {
-                  const updated = await rpc.call(
-                    "selectRepositoryEnvironment",
-                    {
-                      id: selected.id,
-                      datasetEpoch: repositoryDraftEpoch,
-                      expectedRepositoryRevision: repositoryDraftRevision,
-                      environmentId: repositoryEnvironment,
-                    },
-                  );
-                  acceptRepository(
-                    updated,
-                    selected.id,
-                    repositoryDraftEpoch,
-                    originSelection,
-                  );
-                });
-              }}
-            >
-              <label>
-                Reusable main-checkout environment ID{" "}
-                <Input
-                  aria-label="Repository environment ID"
-                  value={repositoryEnvironment}
-                  onChange={(event) =>
-                    setRepositoryEnvironment(event.target.value)
-                  }
-                  placeholder="env_..."
+              {editingDescription ? (
+                <form
+                  className="grid gap-2"
+                  onSubmit={(event) => {
+                    event.preventDefault();
+                    void run(() => saveDetail("description"));
+                  }}
+                >
+                  <textarea
+                    autoFocus
+                    aria-label="Edit Markdown description"
+                    className="block min-h-64 w-full resize-y rounded border border-border bg-background p-3"
+                    value={editDescription}
+                    maxLength={65536}
+                    onChange={(event) => setEditDescription(event.target.value)}
+                  />
+                  <div className="flex gap-2">
+                    <Button disabled={busy}>Save description</Button>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      disabled={busy}
+                      onClick={() => {
+                        setEditDescription(selected.description);
+                        setEditingDescription(false);
+                      }}
+                    >
+                      Cancel description edit
+                    </Button>
+                  </div>
+                </form>
+              ) : (
+                <Markdown
+                  content={safeMarkdown(
+                    selected.description || "_No description._",
+                  )}
                 />
-              </label>
-              <Button
-                type="submit"
-                variant="outline"
-                disabled={
-                  busy || repositoryConflict || !repositoryEnvironment.trim()
-                }
-                className="justify-self-start"
-              >
-                Select and validate environment
-              </Button>
-            </form>
+              )}
+            </section>
+            <WayfinderPanel
+              key={selected.id}
+              task={selected}
+              datasetEpoch={datasetEpoch}
+            />
             <form
-              className="grid gap-2"
+              className="mt-6 grid gap-2"
               onSubmit={(event) => {
                 event.preventDefault();
                 const originSelection = selectionGeneration.current;
                 void run(async () => {
-                  const updated = await rpc.call("prepareRepository", {
+                  const updated = await rpc.call("setStatus", {
                     id: selected.id,
-                    datasetEpoch: repositoryDraftEpoch,
-                    expectedRepositoryRevision: repositoryDraftRevision,
-                    action: repositoryAction,
-                    branchName: repositoryBranch,
-                    parentBranchName:
-                      repositoryAction.includes("stacked") ||
-                      repositoryAction === "restack-existing"
-                        ? repositoryParent
-                        : null,
+                    datasetEpoch: draftEpoch,
+                    expectedRevision: draftRevision,
+                    status: nextStatus,
+                    blockerReason:
+                      nextStatus === "Blocked" ? blockerReason : null,
                   });
-                  acceptRepository(
+                  if (
+                    selectedTaskRef.current === selected.id &&
+                    selectionGeneration.current === originSelection
+                  ) {
+                    setNextStatus(updated.status);
+                    setBlockerReason(updated.blockerReason ?? "");
+                  }
+                  acceptMutation(
                     updated,
                     selected.id,
-                    repositoryDraftEpoch,
+                    draftEpoch,
                     originSelection,
                   );
                 });
               }}
             >
+              <h3 className="font-semibold">Manual status</h3>
               <label>
-                Explicit action{" "}
+                Move to stage{" "}
                 <select
-                  aria-label="Repository preparation action"
+                  aria-label="Move to stage"
                   className="block rounded border border-border bg-background p-2"
-                  value={repositoryAction}
+                  value={nextStatus}
                   onChange={(event) =>
-                    setRepositoryAction(
-                      event.target.value as typeof repositoryAction,
-                    )
+                    setNextStatus(event.target.value as typeof nextStatus)
                   }
                 >
-                  <option value="create-independent">
-                    Create new independent branch
-                  </option>
-                  <option value="associate-independent">
-                    Associate existing independent branch
-                  </option>
-                  <option value="create-stacked">
-                    Create new branch above prerequisite
-                  </option>
-                  <option value="associate-stacked">
-                    Associate existing stacked branch
-                  </option>
-                  <option value="restack-existing">
-                    Deliberately move existing branch above prerequisite
-                  </option>
+                  {normalStatuses.map((stage) => (
+                    <option key={stage}>{stage}</option>
+                  ))}
+                  <option>Blocked</option>
                 </select>
               </label>
-              <label>
-                Exact full branch name{" "}
-                <Input
-                  aria-label="Exact task branch name"
-                  value={repositoryBranch}
-                  onChange={(event) => setRepositoryBranch(event.target.value)}
-                />
-              </label>
-              {(repositoryAction.includes("stacked") ||
-                repositoryAction === "restack-existing") && (
+              {nextStatus === "Blocked" && (
                 <label>
-                  Exact prerequisite branch name{" "}
-                  <Input
-                    aria-label="Exact prerequisite branch name"
-                    value={repositoryParent}
-                    onChange={(event) =>
-                      setRepositoryParent(event.target.value)
-                    }
+                  Required blocker reason{" "}
+                  <textarea
+                    aria-label="Required blocker reason"
+                    className="block min-h-20 w-full rounded border border-border bg-background p-2"
+                    value={blockerReason}
+                    maxLength={2000}
+                    onChange={(event) => setBlockerReason(event.target.value)}
+                    required
                   />
                 </label>
               )}
-              <p className="text-sm text-muted-foreground">
-                Informational task dependencies never alter GitButler stacks.
-                This action never commits, applies/unapplies branches, changes
-                task status, or starts/restarts a thread.
-              </p>
+              {selected.status === "Blocked" && nextStatus !== "Blocked" && (
+                <p>
+                  This explicitly unblocks to {nextStatus}; no previous stage is
+                  inferred.
+                </p>
+              )}
               <Button
-                type="submit"
                 disabled={
-                  busy ||
-                  repositoryConflict ||
-                  !selected.repositoryPreparation.environmentId ||
-                  !repositoryBranch.trim() ||
-                  ((repositoryAction.includes("stacked") ||
-                    repositoryAction === "restack-existing") &&
-                    !repositoryParent.trim())
+                  busy || (nextStatus === "Blocked" && !blockerReason.trim())
                 }
                 className="justify-self-start"
               >
-                Prepare repository work
+                Apply status
               </Button>
             </form>
-            <details>
-              <summary>Correct or reassociate enrolled repository</summary>
-              {correctionConflict && (
+          </div>
+          <div hidden={taskSection !== "Advanced"}>
+            <p className="mt-4 text-xs text-muted-foreground">
+              Latest change: {selected.attribution} at {selected.attributionAt}
+            </p>
+            <form
+              className="mt-6 grid gap-3"
+              onSubmit={(event) => {
+                event.preventDefault();
+                const originSelection = selectionGeneration.current;
+                void run(async () => {
+                  const updated = await rpc.call("replaceRelationships", {
+                    id: selected.id,
+                    datasetEpoch: draftEpoch,
+                    expectedRevision: draftRevision,
+                    dependencyIds,
+                    blockerTaskIds,
+                  });
+                  acceptMutation(
+                    updated,
+                    selected.id,
+                    draftEpoch,
+                    originSelection,
+                  );
+                });
+              }}
+            >
+              <fieldset>
+                <legend className="font-semibold">Depends on</legend>
+                {(data?.tasks ?? [])
+                  .filter((task) => task.id !== selected.id)
+                  .map((task) =>
+                    relationshipOption(task, dependencyIds, setDependencyIds),
+                  )}
+              </fieldset>
+              <fieldset>
+                <legend className="font-semibold">Blocker references</legend>
+                <p className="text-sm text-muted-foreground">
+                  Context only; these do not change status.
+                </p>
+                {(data?.tasks ?? [])
+                  .filter((task) => task.id !== selected.id)
+                  .map((task) =>
+                    relationshipOption(task, blockerTaskIds, setBlockerTaskIds),
+                  )}
+              </fieldset>
+              {selected.dependencyCycle && (
+                <p role="alert" className="text-destructive">
+                  This task participates in a dependency cycle. Status and
+                  branch placement remain manual.
+                </p>
+              )}
+              <Button disabled={busy} className="justify-self-start">
+                Save relationships
+              </Button>
+            </form>
+            <form
+              className="mt-6 grid gap-2"
+              onSubmit={(event) => {
+                event.preventDefault();
+                const paths = pathLines
+                  .split("\n")
+                  .filter((line) => line.trim())
+                  .map((line, index) => {
+                    const separator = line.indexOf("|");
+                    const label =
+                      separator >= 0 ? line.slice(0, separator).trim() : "";
+                    const path = (
+                      separator >= 0 ? line.slice(separator + 1) : line
+                    ).trim();
+                    const previous = selected.paths[index];
+                    return {
+                      ...(previous ? { id: previous.id } : {}),
+                      path,
+                      label: label || null,
+                    };
+                  });
+                const originSelection = selectionGeneration.current;
+                void run(async () => {
+                  const updated = await rpc.call("replacePaths", {
+                    id: selected.id,
+                    datasetEpoch: draftEpoch,
+                    expectedRevision: draftRevision,
+                    paths,
+                  });
+                  acceptMutation(
+                    updated,
+                    selected.id,
+                    draftEpoch,
+                    originSelection,
+                  );
+                });
+              }}
+            >
+              <h3 className="font-semibold">Attached path references</h3>
+              <p className="text-sm text-muted-foreground">
+                One per line as label | path. Contents are never imported or
+                fetched.
+              </p>
+              <textarea
+                aria-label="Attached path references"
+                className="min-h-24 rounded border border-border bg-background p-2 font-mono text-sm"
+                value={pathLines}
+                onChange={(event) => setPathLines(event.target.value)}
+              />
+              <Button disabled={busy} className="justify-self-start">
+                Save paths
+              </Button>
+            </form>
+            <section className="mt-6 grid gap-3 rounded border border-border p-3">
+              <h3 className="font-semibold">Repository preparation</h3>
+              {repositoryConflict && (
                 <div
                   role="alert"
-                  className="mt-2 rounded border border-destructive p-3"
+                  className="rounded border border-destructive p-3"
                 >
                   <p>
-                    Enrollment or dataset identity changed elsewhere. Your
-                    correction draft is preserved.
+                    Repository preparation changed elsewhere. Your branch draft
+                    and its original epoch/revision are preserved.
                   </p>
                   <div className="mt-2 flex flex-wrap gap-2">
                     <Button
                       type="button"
                       onClick={() =>
-                        selectedEnrollment &&
-                        loadCorrectionDraft(
-                          selected,
-                          selectedEnrollment.revision,
-                          datasetEpoch,
-                        )
+                        loadRepositoryDraft(selected, datasetEpoch)
                       }
                     >
-                      Reread and discard correction draft
+                      Reread and discard repository draft
                     </Button>
                     <Button
                       type="button"
                       variant="outline"
                       onClick={() => {
-                        if (!selectedEnrollment) return;
-                        setCorrectionDraftRevision(selectedEnrollment.revision);
-                        setCorrectionDraftEpoch(datasetEpoch);
-                        setCorrectionBaseValue(
-                          JSON.stringify([
-                            "",
-                            selected.repositoryPreparation.environmentId ?? "",
-                          ]),
+                        const preparation = selected.repositoryPreparation;
+                        const serverAction = preparation.parentBranchName
+                          ? "associate-stacked"
+                          : preparation.branchName
+                            ? "associate-independent"
+                            : "create-independent";
+                        setRepositoryDraftRevision(preparation.revision);
+                        setRepositoryDraftEpoch(datasetEpoch);
+                        setRepositoryBaseValue(
+                          repositoryDraftValue(
+                            preparation.environmentId ?? "",
+                            preparation.branchName ?? "",
+                            preparation.parentBranchName ?? "",
+                            serverAction,
+                          ),
                         );
-                        setCorrectionConflict(false);
+                        setRepositoryConflict(false);
                       }}
                     >
-                      Rebase correction draft on latest state
+                      Rebase repository draft on latest state
                     </Button>
                   </div>
                 </div>
               )}
+              <dl className="grid gap-1 text-sm">
+                <div>
+                  <dt className="font-medium">Project</dt>
+                  <dd>{selected.repositoryPreparation.projectId}</dd>
+                </div>
+                <div>
+                  <dt className="font-medium">Host</dt>
+                  <dd>{selected.repositoryPreparation.hostId}</dd>
+                </div>
+                <div>
+                  <dt className="font-medium">Main repository</dt>
+                  <dd className="break-all">
+                    {selected.repositoryPreparation.repository}
+                  </dd>
+                </div>
+                <div>
+                  <dt className="font-medium">Selected BB environment</dt>
+                  <dd>
+                    {selected.repositoryPreparation.environmentId ??
+                      "Not selected"}
+                  </dd>
+                </div>
+                <div>
+                  <dt className="font-medium">Exact task branch</dt>
+                  <dd>
+                    {selected.repositoryPreparation.branchName ??
+                      "Not prepared"}
+                  </dd>
+                </div>
+              </dl>
+              <div
+                role="status"
+                className="rounded border border-border p-2 text-sm"
+              >
+                <p>
+                  <strong>
+                    {selected.repositoryPreparation.observation.state}
+                  </strong>
+                </p>
+                <p>{selected.repositoryPreparation.observation.message}</p>
+                {selected.repositoryPreparation.observation
+                  .combinedWorkingCopy && (
+                  <p>
+                    Combined working copy:{" "}
+                    {selected.repositoryPreparation.observation
+                      .combinedWorkingCopy.hasChanges
+                      ? `${selected.repositoryPreparation.observation.combinedWorkingCopy.changeCount} tracked or untracked change(s)`
+                      : "no tracked or untracked changes reported"}
+                    . Branch preparation neither assigns nor snapshots these
+                    bytes.
+                  </p>
+                )}
+              </div>
               <form
-                className="mt-2 grid gap-2"
+                className="grid gap-2"
                 onSubmit={(event) => {
                   event.preventDefault();
+                  const originSelection = selectionGeneration.current;
                   void run(async () => {
-                    const candidate = data?.candidates.find(
-                      (item) => item.sourceId === correctionSource,
+                    const updated = await rpc.call(
+                      "selectRepositoryEnvironment",
+                      {
+                        id: selected.id,
+                        datasetEpoch: repositoryDraftEpoch,
+                        expectedRepositoryRevision: repositoryDraftRevision,
+                        environmentId: repositoryEnvironment,
+                      },
                     );
-                    if (!candidate)
-                      throw Error(
-                        "Select an available replacement repository.",
-                      );
-                    if (!selectedEnrollment)
-                      throw Error("Enrolled project record is unavailable.");
-                    const updated = await rpc.call("reassociateEnrollment", {
-                      enrollmentId: selectedEnrollment.id,
-                      datasetEpoch: correctionDraftEpoch,
-                      expectedEnrollmentRevision: correctionDraftRevision,
-                      projectId: candidate.projectId,
-                      sourceId: candidate.sourceId,
-                      environmentId: correctionEnvironment,
-                    });
-                    setCorrectionDraftRevision(updated.revision);
-                    setCorrectionDraftEpoch(correctionDraftEpoch);
-                    setCorrectionSource("");
-                    setCorrectionBaseValue(
-                      JSON.stringify(["", correctionEnvironment]),
+                    acceptRepository(
+                      updated,
+                      selected.id,
+                      repositoryDraftEpoch,
+                      originSelection,
                     );
-                    setCorrectionConflict(false);
                   });
                 }}
               >
-                <select
-                  aria-label="Replacement main repository"
-                  className="rounded border border-border bg-background p-2"
-                  value={correctionSource}
-                  onChange={(event) => setCorrectionSource(event.target.value)}
-                >
-                  <option value="">
-                    Select replacement project repository
-                  </option>
-                  {data?.candidates.map((item) => (
-                    <option key={item.sourceId} value={item.sourceId}>
-                      {item.name} — {item.repository}
-                    </option>
-                  ))}
-                </select>
-                <Input
-                  aria-label="Replacement environment ID"
-                  value={correctionEnvironment}
-                  onChange={(event) =>
-                    setCorrectionEnvironment(event.target.value)
-                  }
-                  placeholder="env_..."
-                />
-                <p className="text-sm text-muted-foreground">
-                  Reassociation preserves every task UUID, display ID, number,
-                  project prefix, memory record and status. Saved branch names
-                  remain exact but must be revalidated in the corrected
-                  repository.
-                </p>
+                <label>
+                  Reusable main-checkout environment ID{" "}
+                  <Input
+                    aria-label="Repository environment ID"
+                    value={repositoryEnvironment}
+                    onChange={(event) =>
+                      setRepositoryEnvironment(event.target.value)
+                    }
+                    placeholder="env_..."
+                  />
+                </label>
                 <Button
                   type="submit"
                   variant="outline"
                   disabled={
-                    busy ||
-                    correctionConflict ||
-                    !correctionSource ||
-                    !correctionEnvironment.trim()
+                    busy || repositoryConflict || !repositoryEnvironment.trim()
                   }
                   className="justify-self-start"
                 >
-                  Reassociate without repair
+                  Select and validate environment
                 </Button>
               </form>
-            </details>
-          </section>
-          <section className="mt-6 rounded border border-border p-3">
-            <h3 className="font-semibold">Linked BB conversations</h3>
-            <p className="mt-1 text-sm text-muted-foreground">
-              Linking only records durable authorization. It sends nothing and
-              never starts, stops, moves, or reconfigures the conversation or
-              its repository.
-            </p>
-            <div className="mt-4 rounded border border-border p-3">
-              <h4 className="font-medium">Start a new ordinary conversation</h4>
-              <p className="mt-1 text-sm text-muted-foreground">
-                The normal BB composer keeps structured input, mentions,
-                attachments and execution choices. Task context is appended as a
-                separate text block. Discussion does not require branch
-                preparation or a status change.
-              </p>
-              {selectedEnrollment ? (
-                <TaskStartComposer
-                  key={`${datasetEpoch}:${selected.id}`}
-                  task={selected}
-                  enrollment={selectedEnrollment}
-                  datasetEpoch={datasetEpoch}
-                  onSubmit={submitTaskThread}
-                />
-              ) : (
-                <p role="alert">Current enrolled project is unavailable.</p>
-              )}
-              {startNotices[selected.id] && (
-                <p role="status" className="mt-2 text-sm">
-                  {startNotices[selected.id]}
+              <form
+                className="grid gap-2"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  const originSelection = selectionGeneration.current;
+                  void run(async () => {
+                    const updated = await rpc.call("prepareRepository", {
+                      id: selected.id,
+                      datasetEpoch: repositoryDraftEpoch,
+                      expectedRepositoryRevision: repositoryDraftRevision,
+                      action: repositoryAction,
+                      branchName: repositoryBranch,
+                      parentBranchName:
+                        repositoryAction.includes("stacked") ||
+                        repositoryAction === "restack-existing"
+                          ? repositoryParent
+                          : null,
+                    });
+                    acceptRepository(
+                      updated,
+                      selected.id,
+                      repositoryDraftEpoch,
+                      originSelection,
+                    );
+                  });
+                }}
+              >
+                <label>
+                  Explicit action{" "}
+                  <select
+                    aria-label="Repository preparation action"
+                    className="block rounded border border-border bg-background p-2"
+                    value={repositoryAction}
+                    onChange={(event) =>
+                      setRepositoryAction(
+                        event.target.value as typeof repositoryAction,
+                      )
+                    }
+                  >
+                    <option value="create-independent">
+                      Create new independent branch
+                    </option>
+                    <option value="associate-independent">
+                      Associate existing independent branch
+                    </option>
+                    <option value="create-stacked">
+                      Create new branch above prerequisite
+                    </option>
+                    <option value="associate-stacked">
+                      Associate existing stacked branch
+                    </option>
+                    <option value="restack-existing">
+                      Deliberately move existing branch above prerequisite
+                    </option>
+                  </select>
+                </label>
+                <label>
+                  Exact full branch name{" "}
+                  <Input
+                    aria-label="Exact task branch name"
+                    value={repositoryBranch}
+                    onChange={(event) =>
+                      setRepositoryBranch(event.target.value)
+                    }
+                  />
+                </label>
+                {(repositoryAction.includes("stacked") ||
+                  repositoryAction === "restack-existing") && (
+                  <label>
+                    Exact prerequisite branch name{" "}
+                    <Input
+                      aria-label="Exact prerequisite branch name"
+                      value={repositoryParent}
+                      onChange={(event) =>
+                        setRepositoryParent(event.target.value)
+                      }
+                    />
+                  </label>
+                )}
+                <p className="text-sm text-muted-foreground">
+                  Informational task dependencies never alter GitButler stacks.
+                  This action never commits, applies/unapplies branches, changes
+                  task status, or starts/restarts a thread.
                 </p>
-              )}
-              {currentStart && (
-                <div className="mt-3 rounded border border-border p-3">
-                  <p>
-                    Durable start {currentStart.id} · {currentStart.state}
-                  </p>
-                  <p className="mt-1 text-xs text-muted-foreground">
-                    Created {currentStart.createdAt}. Input digest{" "}
-                    {currentStart.inputDigest}. No transcript body is stored in
-                    this operation.
-                  </p>
-                  {currentStart.error && (
-                    <p role="alert" className="mt-1 text-sm">
-                      {currentStart.error}
+                <Button
+                  type="submit"
+                  disabled={
+                    busy ||
+                    repositoryConflict ||
+                    !selected.repositoryPreparation.environmentId ||
+                    !repositoryBranch.trim() ||
+                    ((repositoryAction.includes("stacked") ||
+                      repositoryAction === "restack-existing") &&
+                      !repositoryParent.trim())
+                  }
+                  className="justify-self-start"
+                >
+                  Prepare repository work
+                </Button>
+              </form>
+              <details>
+                <summary>Correct or reassociate enrolled repository</summary>
+                {correctionConflict && (
+                  <div
+                    role="alert"
+                    className="mt-2 rounded border border-destructive p-3"
+                  >
+                    <p>
+                      Enrollment or dataset identity changed elsewhere. Your
+                      correction draft is preserved.
                     </p>
-                  )}
-                  {currentStart.state === "awaiting-link" &&
-                    currentStart.threadId && (
+                    <div className="mt-2 flex flex-wrap gap-2">
                       <Button
                         type="button"
-                        className="mt-2"
-                        disabled={busy}
-                        onClick={() => {
-                          const originTask = selected.id;
-                          const originEpoch = datasetEpoch;
-                          const operationEpoch = currentStart.datasetEpoch;
-                          const originSelection = selectionGeneration.current;
-                          void runStartRecovery(
-                            originTask,
-                            originEpoch,
-                            originSelection,
-                            async () => {
-                              const result = await rpc.call("retryStartLink", {
-                                id: originTask,
-                                operationId: currentStart.id,
-                                datasetEpoch: operationEpoch,
-                              });
-                              if (
-                                !isCurrentStartView(
-                                  originTask,
-                                  originEpoch,
-                                  originSelection,
-                                )
-                              )
-                                return;
-                              setStartNotices((current) => ({
-                                ...current,
-                                [originTask]:
-                                  result.error ??
-                                  `Start operation is ${result.state}.`,
-                              }));
-                              if (
-                                result.state === "linked" &&
-                                result.threadId
-                              ) {
-                                delete startSubmissions.current[originTask];
-                                navigate.toThread(result.threadId);
-                              }
-                              await refresh();
-                            },
-                          );
-                        }}
+                        onClick={() =>
+                          selectedEnrollment &&
+                          loadCorrectionDraft(
+                            selected,
+                            selectedEnrollment.revision,
+                            datasetEpoch,
+                          )
+                        }
                       >
-                        Retry linking recorded conversation
+                        Reread and discard correction draft
                       </Button>
-                    )}
-                  {currentStart.state === "uncertain" && (
-                    <div className="mt-3 grid gap-2">
-                      <p className="text-sm text-muted-foreground">
-                        BB may already have created the conversation. Enter an
-                        exact thread ID chosen by a human; title, time and text
-                        are never used to guess.
-                      </p>
-                      <Input
-                        aria-label="Exact conversation ID for uncertain start"
-                        value={startRecoveryIds[currentStart.id] ?? ""}
-                        onChange={(event) => {
-                          const value = event.target.value;
-                          startRecoveryEditGenerations.current[
-                            currentStart.id
-                          ] =
-                            (startRecoveryEditGenerations.current[
-                              currentStart.id
-                            ] ?? 0) + 1;
-                          setStartRecoveryIds((current) => ({
-                            ...current,
-                            [currentStart.id]: value,
-                          }));
-                          setStartRecoveryCandidates((current) => ({
-                            ...current,
-                            [currentStart.id]: undefined,
-                          }));
-                        }}
-                        placeholder="thr_..."
-                      />
                       <Button
                         type="button"
                         variant="outline"
-                        disabled={
-                          busy ||
-                          !(startRecoveryIds[currentStart.id] ?? "").trim()
-                        }
                         onClick={() => {
-                          const originTask = selected.id;
-                          const originEpoch = datasetEpoch;
-                          const originSelection = selectionGeneration.current;
-                          const submittedThreadId = (
-                            startRecoveryIds[currentStart.id] ?? ""
-                          ).trim();
-                          const editGeneration =
-                            startRecoveryEditGenerations.current[
-                              currentStart.id
-                            ] ?? 0;
-                          void runStartRecovery(
-                            originTask,
-                            originEpoch,
-                            originSelection,
-                            async () => {
-                              const candidate = await rpc.call(
-                                "inspectThreadCandidate",
-                                {
-                                  id: originTask,
-                                  datasetEpoch: originEpoch,
-                                  threadId: submittedThreadId,
-                                },
-                              );
-                              if (
-                                !isCurrentStartView(
-                                  originTask,
-                                  originEpoch,
-                                  originSelection,
-                                ) ||
-                                (
-                                  startRecoveryIds[currentStart.id] ?? ""
-                                ).trim() !== submittedThreadId ||
-                                (startRecoveryEditGenerations.current[
-                                  currentStart.id
-                                ] ?? 0) !== editGeneration
-                              )
-                                return;
-                              setStartRecoveryCandidates((current) => ({
-                                ...current,
-                                [currentStart.id]: {
-                                  candidate,
-                                  datasetEpoch: originEpoch,
-                                  threadId: submittedThreadId,
-                                  editGeneration,
-                                },
-                              }));
-                            },
+                          if (!selectedEnrollment) return;
+                          setCorrectionDraftRevision(
+                            selectedEnrollment.revision,
                           );
+                          setCorrectionDraftEpoch(datasetEpoch);
+                          setCorrectionBaseValue(
+                            JSON.stringify([
+                              "",
+                              selected.repositoryPreparation.environmentId ??
+                                "",
+                            ]),
+                          );
+                          setCorrectionConflict(false);
                         }}
                       >
-                        Validate exact conversation
+                        Rebase correction draft on latest state
                       </Button>
-                      {startRecoveryCandidate && (
+                    </div>
+                  </div>
+                )}
+                <form
+                  className="mt-2 grid gap-2"
+                  onSubmit={(event) => {
+                    event.preventDefault();
+                    void run(async () => {
+                      const candidate = data?.candidates.find(
+                        (item) => item.sourceId === correctionSource,
+                      );
+                      if (!candidate)
+                        throw Error(
+                          "Select an available replacement repository.",
+                        );
+                      if (!selectedEnrollment)
+                        throw Error("Enrolled project record is unavailable.");
+                      const updated = await rpc.call("reassociateEnrollment", {
+                        enrollmentId: selectedEnrollment.id,
+                        datasetEpoch: correctionDraftEpoch,
+                        expectedEnrollmentRevision: correctionDraftRevision,
+                        projectId: candidate.projectId,
+                        sourceId: candidate.sourceId,
+                        environmentId: correctionEnvironment,
+                      });
+                      setCorrectionDraftRevision(updated.revision);
+                      setCorrectionDraftEpoch(correctionDraftEpoch);
+                      setCorrectionSource("");
+                      setCorrectionBaseValue(
+                        JSON.stringify(["", correctionEnvironment]),
+                      );
+                      setCorrectionConflict(false);
+                    });
+                  }}
+                >
+                  <select
+                    aria-label="Replacement main repository"
+                    className="rounded border border-border bg-background p-2"
+                    value={correctionSource}
+                    onChange={(event) =>
+                      setCorrectionSource(event.target.value)
+                    }
+                  >
+                    <option value="">
+                      Select replacement project repository
+                    </option>
+                    {data?.candidates.map((item) => (
+                      <option key={item.sourceId} value={item.sourceId}>
+                        {item.name} — {item.repository}
+                      </option>
+                    ))}
+                  </select>
+                  <Input
+                    aria-label="Replacement environment ID"
+                    value={correctionEnvironment}
+                    onChange={(event) =>
+                      setCorrectionEnvironment(event.target.value)
+                    }
+                    placeholder="env_..."
+                  />
+                  <p className="text-sm text-muted-foreground">
+                    Reassociation preserves every task UUID, display ID, number,
+                    project prefix, memory record and status. Saved branch names
+                    remain exact but must be revalidated in the corrected
+                    repository.
+                  </p>
+                  <Button
+                    type="submit"
+                    variant="outline"
+                    disabled={
+                      busy ||
+                      correctionConflict ||
+                      !correctionSource ||
+                      !correctionEnvironment.trim()
+                    }
+                    className="justify-self-start"
+                  >
+                    Reassociate without repair
+                  </Button>
+                </form>
+              </details>
+            </section>
+          </div>
+          <div hidden={taskSection !== "Threads"}>
+            <section className="mt-6 rounded border border-border p-3">
+              <h3 className="font-semibold">Linked BB conversations</h3>
+              <div className="mt-4">
+                <Dialog open={newThreadOpen} onOpenChange={setNewThreadOpen}>
+                  <DialogTrigger asChild>
+                    <Button type="button">New thread</Button>
+                  </DialogTrigger>
+                  <DialogContent className="max-h-[90dvh] overflow-y-auto sm:max-w-4xl">
+                    <DialogHeader>
+                      <DialogTitle>
+                        New thread for {selected.displayId}
+                      </DialogTitle>
+                      <DialogDescription>
+                        Use BB's composer to start a conversation. This task and
+                        its context will be linked automatically.
+                      </DialogDescription>
+                    </DialogHeader>
+                    {selectedEnrollment ? (
+                      <TaskStartComposer
+                        key={`${datasetEpoch}:${selected.id}`}
+                        task={selected}
+                        enrollment={selectedEnrollment}
+                        datasetEpoch={datasetEpoch}
+                        onSubmit={submitTaskThread}
+                      />
+                    ) : (
+                      <p role="alert">
+                        Current enrolled project is unavailable.
+                      </p>
+                    )}
+                    {startNotices[selected.id] && (
+                      <p role="alert" className="text-sm text-destructive">
+                        {startNotices[selected.id]}
+                      </p>
+                    )}
+                  </DialogContent>
+                </Dialog>
+                {startNotices[selected.id] && !newThreadOpen && (
+                  <p role="status" className="mt-2 text-sm">
+                    {startNotices[selected.id]}
+                  </p>
+                )}
+                {currentStart && (
+                  <div className="mt-3 rounded border border-border p-3">
+                    <p>
+                      Durable start {currentStart.id} · {currentStart.state}
+                    </p>
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      Created {currentStart.createdAt}. Input digest{" "}
+                      {currentStart.inputDigest}. No transcript body is stored
+                      in this operation.
+                    </p>
+                    {currentStart.error && (
+                      <p role="alert" className="mt-1 text-sm">
+                        {currentStart.error}
+                      </p>
+                    )}
+                    {currentStart.state === "awaiting-link" &&
+                      currentStart.threadId && (
                         <Button
                           type="button"
+                          className="mt-2"
                           disabled={busy}
                           onClick={() => {
                             const originTask = selected.id;
                             const originEpoch = datasetEpoch;
                             const operationEpoch = currentStart.datasetEpoch;
                             const originSelection = selectionGeneration.current;
-                            const candidate = startRecoveryCandidate;
-                            const submittedThreadId = candidate.threadId;
+                            void runStartRecovery(
+                              originTask,
+                              originEpoch,
+                              originSelection,
+                              async () => {
+                                const result = await rpc.call(
+                                  "retryStartLink",
+                                  {
+                                    id: originTask,
+                                    operationId: currentStart.id,
+                                    datasetEpoch: operationEpoch,
+                                  },
+                                );
+                                if (
+                                  !isCurrentStartView(
+                                    originTask,
+                                    originEpoch,
+                                    originSelection,
+                                  )
+                                )
+                                  return;
+                                setStartNotices((current) => ({
+                                  ...current,
+                                  [originTask]:
+                                    result.error ??
+                                    `Start operation is ${result.state}.`,
+                                }));
+                                if (
+                                  result.state === "linked" &&
+                                  result.threadId
+                                ) {
+                                  delete startSubmissions.current[originTask];
+                                  navigate.toThread(result.threadId);
+                                }
+                                await refresh();
+                              },
+                            );
+                          }}
+                        >
+                          Retry linking recorded conversation
+                        </Button>
+                      )}
+                    {currentStart.state === "uncertain" && (
+                      <div className="mt-3 grid gap-2">
+                        <p className="text-sm text-muted-foreground">
+                          BB may already have created the conversation. Enter an
+                          exact thread ID chosen by a human; title, time and
+                          text are never used to guess.
+                        </p>
+                        <Input
+                          aria-label="Exact conversation ID for uncertain start"
+                          value={startRecoveryIds[currentStart.id] ?? ""}
+                          onChange={(event) => {
+                            const value = event.target.value;
+                            startRecoveryEditGenerations.current[
+                              currentStart.id
+                            ] =
+                              (startRecoveryEditGenerations.current[
+                                currentStart.id
+                              ] ?? 0) + 1;
+                            setStartRecoveryIds((current) => ({
+                              ...current,
+                              [currentStart.id]: value,
+                            }));
+                            setStartRecoveryCandidates((current) => ({
+                              ...current,
+                              [currentStart.id]: undefined,
+                            }));
+                          }}
+                          placeholder="thr_..."
+                        />
+                        <Button
+                          type="button"
+                          variant="outline"
+                          disabled={
+                            busy ||
+                            !(startRecoveryIds[currentStart.id] ?? "").trim()
+                          }
+                          onClick={() => {
+                            const originTask = selected.id;
+                            const originEpoch = datasetEpoch;
+                            const originSelection = selectionGeneration.current;
+                            const submittedThreadId = (
+                              startRecoveryIds[currentStart.id] ?? ""
+                            ).trim();
                             const editGeneration =
                               startRecoveryEditGenerations.current[
                                 currentStart.id
@@ -1946,21 +2141,12 @@ function Board({ subPath }: PluginNavPanelProps) {
                               originEpoch,
                               originSelection,
                               async () => {
-                                const result = await rpc.call(
-                                  "identifyStartThread",
+                                const candidate = await rpc.call(
+                                  "inspectThreadCandidate",
                                   {
                                     id: originTask,
-                                    operationId: currentStart.id,
-                                    datasetEpoch: operationEpoch,
-                                    threadId: candidate.threadId,
-                                    expectedCurrentLinkRevision:
-                                      candidate.currentLink?.linkRevision ??
-                                      null,
-                                    reassign: Boolean(
-                                      candidate.currentLink &&
-                                      candidate.currentLink.taskId !==
-                                        originTask,
-                                    ),
+                                    datasetEpoch: originEpoch,
+                                    threadId: submittedThreadId,
                                   },
                                 );
                                 if (
@@ -1977,306 +2163,340 @@ function Board({ subPath }: PluginNavPanelProps) {
                                   ] ?? 0) !== editGeneration
                                 )
                                   return;
-                                if (
-                                  result.state === "linked" &&
-                                  result.threadId
-                                ) {
-                                  delete startSubmissions.current[originTask];
-                                  navigate.toThread(result.threadId);
-                                }
-                                await refresh();
+                                setStartRecoveryCandidates((current) => ({
+                                  ...current,
+                                  [currentStart.id]: {
+                                    candidate,
+                                    datasetEpoch: originEpoch,
+                                    threadId: submittedThreadId,
+                                    editGeneration,
+                                  },
+                                }));
                               },
                             );
                           }}
                         >
-                          {startRecoveryCandidate.currentLink &&
-                          startRecoveryCandidate.currentLink.taskId !==
-                            selected.id
-                            ? `Identify and reassign to ${selected.displayId}`
-                            : `Identify and link to ${selected.displayId}`}
+                          Validate exact conversation
                         </Button>
-                      )}
-                    </div>
+                        {startRecoveryCandidate && (
+                          <Button
+                            type="button"
+                            disabled={busy}
+                            onClick={() => {
+                              const originTask = selected.id;
+                              const originEpoch = datasetEpoch;
+                              const operationEpoch = currentStart.datasetEpoch;
+                              const originSelection =
+                                selectionGeneration.current;
+                              const candidate = startRecoveryCandidate;
+                              const submittedThreadId = candidate.threadId;
+                              const editGeneration =
+                                startRecoveryEditGenerations.current[
+                                  currentStart.id
+                                ] ?? 0;
+                              void runStartRecovery(
+                                originTask,
+                                originEpoch,
+                                originSelection,
+                                async () => {
+                                  const result = await rpc.call(
+                                    "identifyStartThread",
+                                    {
+                                      id: originTask,
+                                      operationId: currentStart.id,
+                                      datasetEpoch: operationEpoch,
+                                      threadId: candidate.threadId,
+                                      expectedCurrentLinkRevision:
+                                        candidate.currentLink?.linkRevision ??
+                                        null,
+                                      reassign: Boolean(
+                                        candidate.currentLink &&
+                                        candidate.currentLink.taskId !==
+                                          originTask,
+                                      ),
+                                    },
+                                  );
+                                  if (
+                                    !isCurrentStartView(
+                                      originTask,
+                                      originEpoch,
+                                      originSelection,
+                                    ) ||
+                                    (
+                                      startRecoveryIds[currentStart.id] ?? ""
+                                    ).trim() !== submittedThreadId ||
+                                    (startRecoveryEditGenerations.current[
+                                      currentStart.id
+                                    ] ?? 0) !== editGeneration
+                                  )
+                                    return;
+                                  if (
+                                    result.state === "linked" &&
+                                    result.threadId
+                                  ) {
+                                    delete startSubmissions.current[originTask];
+                                    navigate.toThread(result.threadId);
+                                  }
+                                  await refresh();
+                                },
+                              );
+                            }}
+                          >
+                            {startRecoveryCandidate.currentLink &&
+                            startRecoveryCandidate.currentLink.taskId !==
+                              selected.id
+                              ? `Identify and reassign to ${selected.displayId}`
+                              : `Identify and link to ${selected.displayId}`}
+                          </Button>
+                        )}
+                      </div>
+                    )}
+                    <Button
+                      type="button"
+                      variant="outline"
+                      className="mt-2"
+                      disabled={busy}
+                      onClick={() => {
+                        const originTask = selected.id;
+                        const originEpoch = datasetEpoch;
+                        const operationEpoch = currentStart.datasetEpoch;
+                        const originSelection = selectionGeneration.current;
+                        void runStartRecovery(
+                          originTask,
+                          originEpoch,
+                          originSelection,
+                          async () => {
+                            await rpc.call("abandonStartOperation", {
+                              id: originTask,
+                              operationId: currentStart.id,
+                              datasetEpoch: operationEpoch,
+                            });
+                            if (
+                              !isCurrentStartView(
+                                originTask,
+                                originEpoch,
+                                originSelection,
+                              )
+                            )
+                              return;
+                            delete startSubmissions.current[originTask];
+                            setStartNotices((current) => ({
+                              ...current,
+                              [originTask]:
+                                "Start operation quarantined. The existing conversation, if any, was not changed. A later composer submission is a separate deliberate attempt.",
+                            }));
+                            await refresh();
+                          },
+                        );
+                      }}
+                    >
+                      Abandon and quarantine this start
+                    </Button>
+                  </div>
+                )}
+              </div>
+              <form
+                className="mt-3 grid gap-2"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  const originTask = selected.id;
+                  const originEpoch = datasetEpoch;
+                  const originSelection = selectionGeneration.current;
+                  const submittedThreadId = linkDraft.trim();
+                  setBusy(true);
+                  setError("");
+                  void rpc
+                    .call("inspectThreadCandidate", {
+                      id: originTask,
+                      datasetEpoch: originEpoch,
+                      threadId: submittedThreadId,
+                    })
+                    .then((candidate) => {
+                      if (
+                        selectedTaskRef.current === originTask &&
+                        datasetEpochRef.current === originEpoch &&
+                        selectionGeneration.current === originSelection &&
+                        (linkDraftsRef.current[originTask] ?? "").trim() ===
+                          submittedThreadId
+                      )
+                        setLinkCandidates((current) => ({
+                          ...current,
+                          [originTask]: {
+                            candidate,
+                            datasetEpoch: originEpoch,
+                          },
+                        }));
+                    })
+                    .catch(report)
+                    .finally(() => setBusy(false));
+                }}
+              >
+                <label>
+                  Existing BB thread ID{" "}
+                  <Input
+                    aria-label="Existing BB thread ID"
+                    value={linkDraft}
+                    onChange={(event) => {
+                      const value = event.target.value;
+                      linkDraftsRef.current[selected.id] = value;
+                      setLinkDrafts((current) => ({
+                        ...current,
+                        [selected.id]: value,
+                      }));
+                      setLinkCandidates((current) => ({
+                        ...current,
+                        [selected.id]: undefined,
+                      }));
+                    }}
+                    placeholder="thr_..."
+                  />
+                </label>
+                <Button
+                  type="submit"
+                  variant="outline"
+                  disabled={busy || !linkDraft.trim()}
+                  className="justify-self-start"
+                >
+                  Validate existing thread
+                </Button>
+              </form>
+              {linkCandidate && linkCandidate.threadId === linkDraft.trim() && (
+                <div className="mt-3 rounded border border-border p-3">
+                  <p>
+                    {linkCandidate.title ?? linkCandidate.threadId} ·{" "}
+                    {linkCandidate.availability} · {linkCandidate.runtimeStatus}
+                  </p>
+                  {linkCandidate.environmentMismatch && (
+                    <p role="alert" className="mt-1 text-sm">
+                      {linkCandidate.environmentMismatch}
+                    </p>
                   )}
+                  {linkCandidate.currentLink &&
+                    linkCandidate.currentLink.taskId !== selected.id && (
+                      <p role="alert" className="mt-1 text-sm">
+                        Currently linked to{" "}
+                        {linkCandidate.currentLink.displayId}. Reassignment is
+                        explicit and invalidates revision{" "}
+                        {linkCandidate.currentLink.linkRevision}.
+                      </p>
+                    )}
                   <Button
                     type="button"
-                    variant="outline"
                     className="mt-2"
                     disabled={busy}
                     onClick={() => {
                       const originTask = selected.id;
                       const originEpoch = datasetEpoch;
-                      const operationEpoch = currentStart.datasetEpoch;
                       const originSelection = selectionGeneration.current;
-                      void runStartRecovery(
-                        originTask,
-                        originEpoch,
-                        originSelection,
-                        async () => {
-                          await rpc.call("abandonStartOperation", {
-                            id: originTask,
-                            operationId: currentStart.id,
-                            datasetEpoch: operationEpoch,
-                          });
-                          if (
-                            !isCurrentStartView(
-                              originTask,
-                              originEpoch,
-                              originSelection,
-                            )
-                          )
-                            return;
-                          delete startSubmissions.current[originTask];
-                          setStartNotices((current) => ({
+                      const candidate = linkCandidate;
+                      void run(async () => {
+                        await rpc.call("linkThread", {
+                          id: originTask,
+                          datasetEpoch: originEpoch,
+                          threadId: candidate.threadId,
+                          expectedCurrentLinkRevision:
+                            candidate.currentLink?.linkRevision ?? null,
+                          reassign: Boolean(
+                            candidate.currentLink &&
+                            candidate.currentLink.taskId !== originTask,
+                          ),
+                        });
+                        if (
+                          selectedTaskRef.current === originTask &&
+                          datasetEpochRef.current === originEpoch &&
+                          selectionGeneration.current === originSelection
+                        ) {
+                          linkDraftsRef.current[originTask] = "";
+                          setLinkDrafts((current) => ({
                             ...current,
-                            [originTask]:
-                              "Start operation quarantined. The existing conversation, if any, was not changed. A later composer submission is a separate deliberate attempt.",
+                            [originTask]: "",
                           }));
-                          await refresh();
-                        },
-                      );
+                          setLinkCandidates((current) => ({
+                            ...current,
+                            [originTask]: undefined,
+                          }));
+                        }
+                      });
                     }}
                   >
-                    Abandon and quarantine this start
+                    {linkCandidate.currentLink &&
+                    linkCandidate.currentLink.taskId !== selected.id
+                      ? `Reassign to ${selected.displayId}`
+                      : `Link to ${selected.displayId}`}
                   </Button>
                 </div>
               )}
-            </div>
-            <form
-              className="mt-3 grid gap-2"
-              onSubmit={(event) => {
-                event.preventDefault();
-                const originTask = selected.id;
-                const originEpoch = datasetEpoch;
-                const originSelection = selectionGeneration.current;
-                const submittedThreadId = linkDraft.trim();
-                setBusy(true);
-                setError("");
-                void rpc
-                  .call("inspectThreadCandidate", {
-                    id: originTask,
-                    datasetEpoch: originEpoch,
-                    threadId: submittedThreadId,
-                  })
-                  .then((candidate) => {
-                    if (
-                      selectedTaskRef.current === originTask &&
-                      datasetEpochRef.current === originEpoch &&
-                      selectionGeneration.current === originSelection &&
-                      (linkDraftsRef.current[originTask] ?? "").trim() ===
-                        submittedThreadId
-                    )
-                      setLinkCandidates((current) => ({
-                        ...current,
-                        [originTask]: {
-                          candidate,
-                          datasetEpoch: originEpoch,
-                        },
-                      }));
-                  })
-                  .catch(report)
-                  .finally(() => setBusy(false));
-              }}
-            >
-              <label>
-                Existing BB thread ID{" "}
-                <Input
-                  aria-label="Existing BB thread ID"
-                  value={linkDraft}
-                  onChange={(event) => {
-                    const value = event.target.value;
-                    linkDraftsRef.current[selected.id] = value;
-                    setLinkDrafts((current) => ({
-                      ...current,
-                      [selected.id]: value,
-                    }));
-                    setLinkCandidates((current) => ({
-                      ...current,
-                      [selected.id]: undefined,
-                    }));
-                  }}
-                  placeholder="thr_..."
-                />
-              </label>
-              <Button
-                type="submit"
-                variant="outline"
-                disabled={busy || !linkDraft.trim()}
-                className="justify-self-start"
-              >
-                Validate existing thread
-              </Button>
-            </form>
-            {linkCandidate && linkCandidate.threadId === linkDraft.trim() && (
-              <div className="mt-3 rounded border border-border p-3">
-                <p>
-                  {linkCandidate.title ?? linkCandidate.threadId} ·{" "}
-                  {linkCandidate.availability} · {linkCandidate.runtimeStatus}
-                </p>
-                {linkCandidate.environmentMismatch && (
-                  <p role="alert" className="mt-1 text-sm">
-                    {linkCandidate.environmentMismatch}
-                  </p>
-                )}
-                {linkCandidate.currentLink &&
-                  linkCandidate.currentLink.taskId !== selected.id && (
-                    <p role="alert" className="mt-1 text-sm">
-                      Currently linked to {linkCandidate.currentLink.displayId}.
-                      Reassignment is explicit and invalidates revision{" "}
-                      {linkCandidate.currentLink.linkRevision}.
+              <div className="mt-4 grid gap-3">
+                {selected.linkedThreads.map((link) => (
+                  <article
+                    key={link.threadId}
+                    className="rounded border border-border p-3"
+                  >
+                    <p>
+                      {link.lastKnownTitle ?? link.threadId} ·{" "}
+                      {link.availability}
                     </p>
-                  )}
-                <Button
-                  type="button"
-                  className="mt-2"
-                  disabled={busy}
-                  onClick={() => {
-                    const originTask = selected.id;
-                    const originEpoch = datasetEpoch;
-                    const originSelection = selectionGeneration.current;
-                    const candidate = linkCandidate;
-                    void run(async () => {
-                      await rpc.call("linkThread", {
-                        id: originTask,
-                        datasetEpoch: originEpoch,
-                        threadId: candidate.threadId,
-                        expectedCurrentLinkRevision:
-                          candidate.currentLink?.linkRevision ?? null,
-                        reassign: Boolean(
-                          candidate.currentLink &&
-                          candidate.currentLink.taskId !== originTask,
-                        ),
-                      });
-                      if (
-                        selectedTaskRef.current === originTask &&
-                        datasetEpochRef.current === originEpoch &&
-                        selectionGeneration.current === originSelection
-                      ) {
-                        linkDraftsRef.current[originTask] = "";
-                        setLinkDrafts((current) => ({
-                          ...current,
-                          [originTask]: "",
-                        }));
-                        setLinkCandidates((current) => ({
-                          ...current,
-                          [originTask]: undefined,
-                        }));
-                      }
-                    });
-                  }}
-                >
-                  {linkCandidate.currentLink &&
-                  linkCandidate.currentLink.taskId !== selected.id
-                    ? `Reassign to ${selected.displayId}`
-                    : `Link to ${selected.displayId}`}
-                </Button>
-              </div>
-            )}
-            <div className="mt-4 grid gap-3">
-              {selected.linkedThreads.map((link) => (
-                <article
-                  key={link.threadId}
-                  className="rounded border border-border p-3"
-                >
-                  <p>
-                    {link.lastKnownTitle ?? link.threadId} · {link.availability}
-                  </p>
-                  <p className="text-xs text-muted-foreground">
-                    {link.threadId} · authorization revision {link.linkRevision}
-                  </p>
-                  <p className="mt-1 text-sm">{link.message}</p>
-                  {link.environmentMismatch && (
-                    <p role="alert" className="mt-1 text-sm">
-                      {link.environmentMismatch}
+                    <p className="text-xs text-muted-foreground">
+                      {link.threadId} · authorization revision{" "}
+                      {link.linkRevision}
                     </p>
-                  )}
-                  {threadNotices[
-                    `${selected.id}:${link.threadId}:${link.linkRevision}`
-                  ] && (
-                    <p role="status" className="mt-1 text-sm">
-                      {
-                        threadNotices[
-                          `${selected.id}:${link.threadId}:${link.linkRevision}`
-                        ]
-                      }
-                    </p>
-                  )}
-                  <div className="mt-2 flex flex-wrap gap-2">
-                    <Button
-                      type="button"
-                      variant="outline"
-                      onClick={() => navigate.toThread(link.threadId)}
-                    >
-                      Open conversation
-                    </Button>
-                    <Button
-                      type="button"
-                      variant="outline"
-                      disabled={busy}
-                      onClick={() =>
-                        void run(() =>
-                          rpc.call("refreshThreadLink", {
-                            id: selected.id,
-                            datasetEpoch,
-                            threadId: link.threadId,
-                            expectedLinkRevision: link.linkRevision,
-                          }),
-                        )
-                      }
-                    >
-                      Refresh reference
-                    </Button>
-                    <Button
-                      type="button"
-                      disabled={busy || link.availability !== "available"}
-                      onClick={() =>
-                        (() => {
-                          const originTask = selected.id;
-                          const originEpoch = datasetEpoch;
-                          const originSelection = selectionGeneration.current;
-                          void run(async () => {
-                            const result = await rpc.call("sendTaskContext", {
-                              id: originTask,
-                              datasetEpoch: originEpoch,
-                              threadId: link.threadId,
-                              expectedLinkRevision: link.linkRevision,
-                            });
-                            if (
-                              selectedTaskRef.current === originTask &&
-                              datasetEpochRef.current === originEpoch &&
-                              selectionGeneration.current === originSelection
-                            )
-                              setThreadNotices((current) => ({
-                                ...current,
-                                [`${originTask}:${link.threadId}:${link.linkRevision}`]:
-                                  result.message,
-                              }));
-                          });
-                        })()
-                      }
-                    >
-                      Send current task context
-                    </Button>
-                    {link.runtimeStatus === "idle" && (
+                    <p className="mt-1 text-sm">{link.message}</p>
+                    {link.environmentMismatch && (
+                      <p role="alert" className="mt-1 text-sm">
+                        {link.environmentMismatch}
+                      </p>
+                    )}
+                    {threadNotices[
+                      `${selected.id}:${link.threadId}:${link.linkRevision}`
+                    ] && (
+                      <p role="status" className="mt-1 text-sm">
+                        {
+                          threadNotices[
+                            `${selected.id}:${link.threadId}:${link.linkRevision}`
+                          ]
+                        }
+                      </p>
+                    )}
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      <Button
+                        type="button"
+                        variant="outline"
+                        onClick={() => navigate.toThread(link.threadId)}
+                      >
+                        Open conversation
+                      </Button>
                       <Button
                         type="button"
                         variant="outline"
                         disabled={busy}
+                        onClick={() =>
+                          void run(() =>
+                            rpc.call("refreshThreadLink", {
+                              id: selected.id,
+                              datasetEpoch,
+                              threadId: link.threadId,
+                              expectedLinkRevision: link.linkRevision,
+                            }),
+                          )
+                        }
+                      >
+                        Refresh reference
+                      </Button>
+                      <Button
+                        type="button"
+                        disabled={busy || link.availability !== "available"}
                         onClick={() =>
                           (() => {
                             const originTask = selected.id;
                             const originEpoch = datasetEpoch;
                             const originSelection = selectionGeneration.current;
                             void run(async () => {
-                              const result = await rpc.call(
-                                "releaseIdleThreadRuntime",
-                                {
-                                  id: originTask,
-                                  datasetEpoch: originEpoch,
-                                  threadId: link.threadId,
-                                  expectedLinkRevision: link.linkRevision,
-                                },
-                              );
+                              const result = await rpc.call("sendTaskContext", {
+                                id: originTask,
+                                datasetEpoch: originEpoch,
+                                threadId: link.threadId,
+                                expectedLinkRevision: link.linkRevision,
+                              });
                               if (
                                 selectedTaskRef.current === originTask &&
                                 datasetEpochRef.current === originEpoch &&
@@ -2291,296 +2511,345 @@ function Board({ subPath }: PluginNavPanelProps) {
                           })()
                         }
                       >
-                        Release idle runtime (best effort)
+                        Send current task context
                       </Button>
-                    )}
-                  </div>
-                  <p className="mt-2 text-xs text-muted-foreground">
-                    Tool availability is session-bound and cannot be inspected
-                    from this reference. Newly started enrolled-project sessions
-                    are configured with the narrow tools. On this host, an older
-                    provider session can persist without new tools even after an
-                    idle release. The verified recovery is BB's normal New
-                    thread flow in this enrolled project, followed by linking
-                    that new conversation and explicitly sending current task
-                    context. Active work is never stopped automatically.
+                      {link.runtimeStatus === "idle" && (
+                        <Button
+                          type="button"
+                          variant="outline"
+                          disabled={busy}
+                          onClick={() =>
+                            (() => {
+                              const originTask = selected.id;
+                              const originEpoch = datasetEpoch;
+                              const originSelection =
+                                selectionGeneration.current;
+                              void run(async () => {
+                                const result = await rpc.call(
+                                  "releaseIdleThreadRuntime",
+                                  {
+                                    id: originTask,
+                                    datasetEpoch: originEpoch,
+                                    threadId: link.threadId,
+                                    expectedLinkRevision: link.linkRevision,
+                                  },
+                                );
+                                if (
+                                  selectedTaskRef.current === originTask &&
+                                  datasetEpochRef.current === originEpoch &&
+                                  selectionGeneration.current ===
+                                    originSelection
+                                )
+                                  setThreadNotices((current) => ({
+                                    ...current,
+                                    [`${originTask}:${link.threadId}:${link.linkRevision}`]:
+                                      result.message,
+                                  }));
+                              });
+                            })()
+                          }
+                        >
+                          Release idle runtime (best effort)
+                        </Button>
+                      )}
+                    </div>
+                    <p className="mt-2 text-xs text-muted-foreground">
+                      Tool availability is session-bound and cannot be inspected
+                      from this reference. Newly started enrolled-project
+                      sessions are configured with the narrow tools. On this
+                      host, an older provider session can persist without new
+                      tools even after an idle release. The verified recovery is
+                      BB's normal New thread flow in this enrolled project,
+                      followed by linking that new conversation and explicitly
+                      sending current task context. Active work is never stopped
+                      automatically.
+                    </p>
+                  </article>
+                ))}
+                {selected.linkedThreads.length === 0 && (
+                  <p className="text-sm text-muted-foreground">
+                    No linked conversations.
                   </p>
-                </article>
-              ))}
-              {selected.linkedThreads.length === 0 && (
-                <p className="text-sm text-muted-foreground">
-                  No linked conversations.
+                )}
+              </div>
+            </section>
+          </div>
+          <div hidden={taskSection !== "Memory"}>
+            <h3 className="mt-6 font-semibold">Task memory</h3>
+            {!memoryView && <p role="status">Reading canonical memory…</p>}
+            {memoryDraftConflict && (
+              <div
+                role="alert"
+                className="my-3 rounded border border-destructive p-3"
+              >
+                <p>
+                  Canonical memory changed while your draft was dirty. The draft
+                  and its original dataset/revision/hash token are preserved.
                 </p>
-              )}
-            </div>
-          </section>
-          <h3 className="mt-6 font-semibold">Task memory</h3>
-          {!memoryView && <p role="status">Reading canonical memory…</p>}
-          {memoryDraftConflict && (
-            <div
-              role="alert"
-              className="my-3 rounded border border-destructive p-3"
-            >
-              <p>
-                Canonical memory changed while your draft was dirty. The draft
-                and its original dataset/revision/hash token are preserved.
-              </p>
-              {memoryView?.state === "healthy" && (
-                <div className="mt-2 flex flex-wrap gap-2">
-                  <Button
-                    type="button"
-                    onClick={() => loadMemoryDraft(memoryView)}
-                  >
-                    Reread and discard memory draft
-                  </Button>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    onClick={() => {
-                      setMemoryDraftToken(memoryView.token);
-                      setMemoryBase(memoryView.content);
-                      setMemoryDraftConflict(false);
-                      setMemoryOperation(null);
-                    }}
-                  >
-                    Rebase draft on latest memory token
-                  </Button>
-                </div>
-              )}
-            </div>
-          )}
-          {memoryView?.state === "healthy" && (
-            <>
-              <p className="text-sm text-muted-foreground">
-                Revision {memoryView.token.memoryRevision} · latest accepted:{" "}
-                {memoryView.attribution.kind} via {memoryView.attribution.route}
-                {memoryView.attribution.threadId
-                  ? ` from ${memoryView.attribution.threadId}`
-                  : ""}{" "}
-                {memoryView.attribution.at
-                  ? ` at ${memoryView.attribution.at}`
-                  : " at an unknown legacy acceptance time"}
-              </p>
-              <form
-                className="mt-2 grid gap-2"
-                onSubmit={(event) => {
-                  event.preventDefault();
-                  if (!memoryDraftToken) return;
-                  const originTask = selected.id;
-                  const originSelection = selectionGeneration.current;
-                  const originEpoch = memoryDraftToken.datasetEpoch;
-                  const submittedContent = memoryDraft;
-                  const submittedEditGeneration = memoryEditGeneration.current;
-                  void run(async () => {
-                    const operation =
-                      memoryOperation?.content === submittedContent
-                        ? memoryOperation
-                        : {
-                            id: crypto.randomUUID(),
-                            content: submittedContent,
-                          };
-                    setMemoryOperation(operation);
-                    const result = await rpc.call("saveMemory", {
-                      id: originTask,
-                      operationId: operation.id,
-                      token: memoryDraftToken,
-                      content: submittedContent,
-                    });
-                    if (
-                      "token" in result &&
-                      selectedTaskRef.current === originTask &&
-                      datasetEpochRef.current === originEpoch &&
-                      selectionGeneration.current === originSelection
-                    ) {
-                      const accepted: Extract<
-                        MemoryView,
-                        { state: "healthy" }
-                      > = {
-                        state: "healthy",
-                        content: submittedContent,
-                        token: result.token,
-                        attribution: result.attribution,
-                      };
-                      setMemoryView(accepted);
-                      if (
-                        memoryEditGeneration.current === submittedEditGeneration
-                      )
-                        loadMemoryDraft(accepted);
-                      else {
-                        setMemoryBase(submittedContent);
-                        setMemoryDraftToken(result.token);
+                {memoryView?.state === "healthy" && (
+                  <div className="mt-2 flex flex-wrap gap-2">
+                    <Button
+                      type="button"
+                      onClick={() => loadMemoryDraft(memoryView)}
+                    >
+                      Reread and discard memory draft
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      onClick={() => {
+                        setMemoryDraftToken(memoryView.token);
+                        setMemoryBase(memoryView.content);
                         setMemoryDraftConflict(false);
                         setMemoryOperation(null);
-                      }
-                    } else {
-                      if (!("token" in result)) setError(result.message);
-                      await refreshMemory();
-                    }
-                  });
-                }}
-              >
-                <label>
-                  Canonical Markdown editor{" "}
-                  <textarea
-                    aria-label="Edit task memory Markdown"
-                    className="block min-h-48 w-full rounded border border-border bg-background p-2"
-                    value={memoryDraft}
-                    disabled={busy}
-                    onChange={(event) => {
-                      memoryEditGeneration.current += 1;
-                      setMemoryDraft(event.target.value);
-                      if (
-                        memoryOperation &&
-                        memoryOperation.content !== event.target.value
-                      )
-                        setMemoryOperation(null);
-                    }}
-                  />
-                </label>
-                <Button
-                  disabled={
-                    busy ||
-                    !memoryDirty ||
-                    memoryDraftConflict ||
-                    memoryView.state !== "healthy"
-                  }
-                  className="justify-self-start"
-                >
-                  Save task memory
-                </Button>
-              </form>
-              <h4 className="mt-3 font-medium">Canonical content</h4>
-              <Markdown
-                content={safeMarkdown(memoryView.content || "_Empty memory._")}
-              />
-            </>
-          )}
-          {memoryView?.state === "pending" && (
-            <div role="alert" className="mt-2 rounded border p-3">
-              <p>Memory operation {memoryView.operationId} is pending.</p>
-              <p>{memoryView.message}</p>
-              <Button
-                type="button"
-                disabled={busy}
-                onClick={() => void run(() => refreshMemory())}
-              >
-                Reconcile durable memory operation
-              </Button>
-            </div>
-          )}
-          {memoryView?.state === "conflict" && (
-            <div
-              role="alert"
-              className="mt-2 rounded border border-destructive p-3"
-            >
-              <p>
-                Memory conflict ({memoryView.reason}). External attribution is
-                unknown; bytes were preserved.
-              </p>
-              <p>{memoryView.message}</p>
-              {memoryView.operationId && (
-                <p>Durable operation: {memoryView.operationId}</p>
-              )}
-              {memoryView.content !== null && (
-                <>
-                  <h4 className="mt-3 font-medium">
-                    Current canonical external content
-                  </h4>
-                  <Markdown
-                    content={safeMarkdown(
-                      memoryView.content || "_Empty external memory._",
-                    )}
-                  />
-                </>
-              )}
-              {memoryView.allowedActions.includes("accept-external") &&
-                memoryView.observedHash && (
-                  <Button
-                    type="button"
-                    disabled={busy}
-                    onClick={() =>
-                      (() => {
-                        const originTask = selected.id;
-                        const originSelection = selectionGeneration.current;
-                        const originEpoch =
-                          memoryView.committedToken.datasetEpoch;
-                        void run(async () => {
-                          const result = await rpc.call(
-                            "acceptExternalMemory",
-                            {
-                              id: originTask,
-                              operationId: crypto.randomUUID(),
-                              token: memoryView.committedToken,
-                              observedHash: memoryView.observedHash!,
-                            },
-                          );
-                          if (!("token" in result)) throw Error(result.message);
-                          if (
-                            selectedTaskRef.current === originTask &&
-                            datasetEpochRef.current === originEpoch &&
-                            selectionGeneration.current === originSelection
-                          )
-                            await refreshMemory();
-                        });
-                      })()
-                    }
-                  >
-                    Accept current external content
-                  </Button>
+                      }}
+                    >
+                      Rebase draft on latest memory token
+                    </Button>
+                  </div>
                 )}
-              {memoryView.allowedActions.includes("restore-known") && (
+              </div>
+            )}
+            {memoryView?.state === "healthy" && (
+              <>
+                <p className="text-sm text-muted-foreground">
+                  Revision {memoryView.token.memoryRevision} · latest accepted:{" "}
+                  {memoryView.attribution.kind} via{" "}
+                  {memoryView.attribution.route}
+                  {memoryView.attribution.threadId
+                    ? ` from ${memoryView.attribution.threadId}`
+                    : ""}{" "}
+                  {memoryView.attribution.at
+                    ? ` at ${memoryView.attribution.at}`
+                    : " at an unknown legacy acceptance time"}
+                </p>
                 <form
-                  className="mt-3 grid gap-2"
+                  className="mt-2 grid gap-2"
                   onSubmit={(event) => {
                     event.preventDefault();
+                    if (!memoryDraftToken) return;
                     const originTask = selected.id;
                     const originSelection = selectionGeneration.current;
-                    const originEpoch = memoryView.committedToken.datasetEpoch;
+                    const originEpoch = memoryDraftToken.datasetEpoch;
+                    const submittedContent = memoryDraft;
+                    const submittedEditGeneration =
+                      memoryEditGeneration.current;
                     void run(async () => {
-                      const result = await rpc.call("restoreKnownMemory", {
+                      const operation =
+                        memoryOperation?.content === submittedContent
+                          ? memoryOperation
+                          : {
+                              id: crypto.randomUUID(),
+                              content: submittedContent,
+                            };
+                      setMemoryOperation(operation);
+                      const result = await rpc.call("saveMemory", {
                         id: originTask,
-                        operationId: crypto.randomUUID(),
-                        token: memoryView.committedToken,
-                        observedHash: memoryView.observedHash,
-                        content: memoryRestoreKnown,
+                        operationId: operation.id,
+                        token: memoryDraftToken,
+                        content: submittedContent,
                       });
-                      if (!("token" in result)) throw Error(result.message);
                       if (
+                        "token" in result &&
                         selectedTaskRef.current === originTask &&
                         datasetEpochRef.current === originEpoch &&
                         selectionGeneration.current === originSelection
                       ) {
-                        setMemoryRestoreKnown("");
+                        const accepted: Extract<
+                          MemoryView,
+                          { state: "healthy" }
+                        > = {
+                          state: "healthy",
+                          content: submittedContent,
+                          token: result.token,
+                          attribution: result.attribution,
+                        };
+                        setMemoryView(accepted);
+                        if (
+                          memoryEditGeneration.current ===
+                          submittedEditGeneration
+                        )
+                          loadMemoryDraft(accepted);
+                        else {
+                          setMemoryBase(submittedContent);
+                          setMemoryDraftToken(result.token);
+                          setMemoryDraftConflict(false);
+                          setMemoryOperation(null);
+                        }
+                      } else {
+                        if (!("token" in result)) setError(result.message);
                         await refreshMemory();
                       }
                     });
                   }}
                 >
                   <label>
-                    Verified known Markdown bytes{" "}
+                    Canonical Markdown editor{" "}
                     <textarea
-                      aria-label="Verified known task memory"
-                      className="block min-h-32 w-full rounded border border-border bg-background p-2"
-                      value={memoryRestoreKnown}
-                      onChange={(event) =>
-                        setMemoryRestoreKnown(event.target.value)
-                      }
+                      aria-label="Edit task memory Markdown"
+                      className="block min-h-48 w-full rounded border border-border bg-background p-2"
+                      value={memoryDraft}
+                      disabled={busy}
+                      onChange={(event) => {
+                        memoryEditGeneration.current += 1;
+                        setMemoryDraft(event.target.value);
+                        if (
+                          memoryOperation &&
+                          memoryOperation.content !== event.target.value
+                        )
+                          setMemoryOperation(null);
+                      }}
                     />
                   </label>
-                  <Button disabled={busy} className="justify-self-start">
-                    Restore verified known content
+                  <Button
+                    disabled={
+                      busy ||
+                      !memoryDirty ||
+                      memoryDraftConflict ||
+                      memoryView.state !== "healthy"
+                    }
+                    className="justify-self-start"
+                  >
+                    Save task memory
                   </Button>
                 </form>
-              )}
-              {memoryView.allowedActions.length === 0 && (
+                <h4 className="mt-3 font-medium">Canonical content</h4>
+                <Markdown
+                  content={safeMarkdown(
+                    memoryView.content || "_Empty memory._",
+                  )}
+                />
+              </>
+            )}
+            {memoryView?.state === "pending" && (
+              <div role="alert" className="mt-2 rounded border p-3">
+                <p>Memory operation {memoryView.operationId} is pending.</p>
+                <p>{memoryView.message}</p>
+                <Button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => void run(() => refreshMemory())}
+                >
+                  Reconcile durable memory operation
+                </Button>
+              </div>
+            )}
+            {memoryView?.state === "conflict" && (
+              <div
+                role="alert"
+                className="mt-2 rounded border border-destructive p-3"
+              >
                 <p>
-                  This unsafe file shape cannot be replaced through the plugin.
-                  Correct the canonical filesystem entry manually, then reread;
-                  no target or unknown bytes will be overwritten.
+                  Memory conflict ({memoryView.reason}). External attribution is
+                  unknown; bytes were preserved.
                 </p>
-              )}
-            </div>
-          )}
+                <p>{memoryView.message}</p>
+                {memoryView.operationId && (
+                  <p>Durable operation: {memoryView.operationId}</p>
+                )}
+                {memoryView.content !== null && (
+                  <>
+                    <h4 className="mt-3 font-medium">
+                      Current canonical external content
+                    </h4>
+                    <Markdown
+                      content={safeMarkdown(
+                        memoryView.content || "_Empty external memory._",
+                      )}
+                    />
+                  </>
+                )}
+                {memoryView.allowedActions.includes("accept-external") &&
+                  memoryView.observedHash && (
+                    <Button
+                      type="button"
+                      disabled={busy}
+                      onClick={() =>
+                        (() => {
+                          const originTask = selected.id;
+                          const originSelection = selectionGeneration.current;
+                          const originEpoch =
+                            memoryView.committedToken.datasetEpoch;
+                          void run(async () => {
+                            const result = await rpc.call(
+                              "acceptExternalMemory",
+                              {
+                                id: originTask,
+                                operationId: crypto.randomUUID(),
+                                token: memoryView.committedToken,
+                                observedHash: memoryView.observedHash!,
+                              },
+                            );
+                            if (!("token" in result))
+                              throw Error(result.message);
+                            if (
+                              selectedTaskRef.current === originTask &&
+                              datasetEpochRef.current === originEpoch &&
+                              selectionGeneration.current === originSelection
+                            )
+                              await refreshMemory();
+                          });
+                        })()
+                      }
+                    >
+                      Accept current external content
+                    </Button>
+                  )}
+                {memoryView.allowedActions.includes("restore-known") && (
+                  <form
+                    className="mt-3 grid gap-2"
+                    onSubmit={(event) => {
+                      event.preventDefault();
+                      const originTask = selected.id;
+                      const originSelection = selectionGeneration.current;
+                      const originEpoch =
+                        memoryView.committedToken.datasetEpoch;
+                      void run(async () => {
+                        const result = await rpc.call("restoreKnownMemory", {
+                          id: originTask,
+                          operationId: crypto.randomUUID(),
+                          token: memoryView.committedToken,
+                          observedHash: memoryView.observedHash,
+                          content: memoryRestoreKnown,
+                        });
+                        if (!("token" in result)) throw Error(result.message);
+                        if (
+                          selectedTaskRef.current === originTask &&
+                          datasetEpochRef.current === originEpoch &&
+                          selectionGeneration.current === originSelection
+                        ) {
+                          setMemoryRestoreKnown("");
+                          await refreshMemory();
+                        }
+                      });
+                    }}
+                  >
+                    <label>
+                      Verified known Markdown bytes{" "}
+                      <textarea
+                        aria-label="Verified known task memory"
+                        className="block min-h-32 w-full rounded border border-border bg-background p-2"
+                        value={memoryRestoreKnown}
+                        onChange={(event) =>
+                          setMemoryRestoreKnown(event.target.value)
+                        }
+                      />
+                    </label>
+                    <Button disabled={busy} className="justify-self-start">
+                      Restore verified known content
+                    </Button>
+                  </form>
+                )}
+                {memoryView.allowedActions.length === 0 && (
+                  <p>
+                    This unsafe file shape cannot be replaced through the
+                    plugin. Correct the canonical filesystem entry manually,
+                    then reread; no target or unknown bytes will be overwritten.
+                  </p>
+                )}
+              </div>
+            )}
+          </div>
         </aside>
       )}
     </div>

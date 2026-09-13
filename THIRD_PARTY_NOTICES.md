@@ -49,11 +49,10 @@ by `package-lock.json` at the verified runtime.
 
 ## Vendored UI primitives
 
-`components/ui/button.tsx`, `components/ui/input.tsx`, `components/ui/motion.ts`,
-`components/ui/coarse-pointer-sizing.ts`, `components/ui/hooks/` and
-`lib/utils.ts` are adapted from the shadcn/ui "new-york" style and the BB
+`components/ui/`, `lib/utils.ts`, `lib/portal-scope.ts` and
+`hooks/useBrowserDimmingModal.ts` are adapted from the shadcn/ui "new-york" style and the BB
 plugin registry (`components.json` `registries.@bb`), both MIT-licensed, and
-were trimmed from the BB scaffold before delivery. `@hugeicons/*` icon data and
+include the responsive dialog and its supporting primitives from BB desktop-v0.42.1. `@hugeicons/*` icon data and
 React bindings are MIT-licensed.
 
 No package is redistributed in a modified binary form by this repository; the

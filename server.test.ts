@@ -1,4 +1,4 @@
-import { afterEach, expect, test } from "vitest";
+import { afterEach, expect, test, vi } from "vitest";
 import {
   createFakePluginHost,
   makePluginAgentConfigurationContext,
@@ -102,6 +102,7 @@ async function fixture(startFailure?: { point: StartFailurePoint | null }) {
   let environmentGetGate: Promise<void> | null = null;
   let releaseEnvironmentGet: (() => void) | null = null;
   let threadGetCount = 0;
+  let pendingThreadEnvironmentReads = 0;
   let threadGetGate: Promise<void> | null = null;
   let releaseThreadGet: (() => void) | null = null;
   const wayfinderReadGates: Array<Promise<void>> = [];
@@ -242,6 +243,10 @@ async function fixture(startFailure?: { point: StartFailurePoint | null }) {
           if (threadGetGate) await threadGetGate;
           const thread = threads.get(threadId);
           if (!thread) throw Error("Thread unavailable");
+          if (pendingThreadEnvironmentReads > 0) {
+            pendingThreadEnvironmentReads -= 1;
+            return { ...thread, environmentId: null };
+          }
           return thread;
         },
         send: async () => {
@@ -502,6 +507,8 @@ async function fixture(startFailure?: { point: StartFailurePoint | null }) {
     stopCount: () => stopCount,
     spawnCount: () => spawnCount,
     spawnRequests,
+    delayThreadEnvironment: (reads: number) =>
+      (pendingThreadEnvironmentReads = reads),
     loseSpawnResponse: () => (possibleDispatchFailure = true),
     delaySpawns: () => {
       spawnGate = new Promise<void>((resolve) => (releaseSpawn = resolve));
@@ -693,6 +700,128 @@ async function startSubmission(
     ...overrides,
   };
 }
+
+test("thread start waits for BB to attach its environment before linking", async () => {
+  const f = await fixture();
+  const created = task.parse(
+    await f.call("create", {
+      enrollmentId: f.enrolled.id,
+      title: "Provisioning checkout",
+    }),
+  );
+  f.delayThreadEnvironment(2);
+  const submission = await startSubmission(f, created);
+  expect(await f.call("startLinkedThread", submission)).toMatchObject({
+    state: "linked",
+    threadId: "thread-spawn-1",
+    error: null,
+  });
+  expect(f.spawnCount()).toBe(1);
+});
+
+test("slow checkout preparation stays recoverable without spawning twice", async () => {
+  const f = await fixture();
+  const created = task.parse(
+    await f.call("create", {
+      enrollmentId: f.enrolled.id,
+      title: "Slow checkout",
+    }),
+  );
+  const submission = await startSubmission(f, created);
+  f.delayThreadEnvironment(100);
+  vi.useFakeTimers({ toFake: ["Date"] });
+  try {
+    const pending = f.call("startLinkedThread", submission);
+    await expect.poll(() => f.threadGetCount()).toBeGreaterThanOrEqual(2);
+    vi.setSystemTime(Date.now() + 11_000);
+    expect(await pending).toMatchObject({
+      state: "awaiting-link",
+      threadId: "thread-spawn-1",
+      error: expect.stringContaining("still preparing its checkout"),
+    });
+  } finally {
+    vi.useRealTimers();
+  }
+  f.delayThreadEnvironment(0);
+  expect(
+    await f.call("retryStartLink", {
+      id: created.id,
+      operationId: submission.operationId,
+      datasetEpoch: submission.datasetEpoch,
+    }),
+  ).toMatchObject({ state: "linked", error: null });
+  expect(f.spawnCount()).toBe(1);
+});
+
+test("BB provider project checkout submissions link once and preserve replay identity", async () => {
+  const f = await fixture();
+  const created = task.parse(
+    await f.call("create", {
+      enrollmentId: f.enrolled.id,
+      title: "Current composer",
+    }),
+  );
+  const input = await startSubmission(f, created);
+  const submission = {
+    ...input,
+    request: {
+      ...input.request,
+      environment: {
+        type: "provider",
+        environmentProviderId: "project-checkout",
+        machine: { type: "existing", hostId: "host-1" },
+        inputs: {},
+      },
+    },
+  };
+  expect(await f.call("startLinkedThread", submission)).toMatchObject({
+    state: "linked",
+    threadId: "thread-spawn-1",
+  });
+  expect(await f.call("startLinkedThread", submission)).toMatchObject({
+    state: "linked",
+  });
+  expect(f.spawnCount()).toBe(1);
+  expect(f.spawnRequests[0]).toMatchObject({
+    environment: input.request.environment,
+    providerId: input.request.providerId,
+    model: input.request.model,
+  });
+});
+
+test.each([
+  { hostId: "host-other", inputs: {} },
+  { hostId: "host-1", inputs: { path: "/another/checkout" } },
+  { hostId: "host-1", inputs: { branch: { kind: "existing", name: "other" } } },
+  { hostId: "host-1", inputs: { branch: { kind: "new", baseBranch: "main" } } },
+])(
+  "provider checkout retains environment guards: %j",
+  async ({ hostId, inputs }) => {
+    const f = await fixture();
+    const created = task.parse(
+      await f.call("create", {
+        enrollmentId: f.enrolled.id,
+        title: "Guarded composer",
+      }),
+    );
+    const input = await startSubmission(f, created);
+    expect(
+      await f.call("startLinkedThread", {
+        ...input,
+        request: {
+          ...input.request,
+          environment: {
+            type: "provider",
+            environmentProviderId: "project-checkout",
+            machine: { type: "existing", hostId },
+            inputs,
+          },
+        },
+      }),
+    ).toMatchObject({ state: "failed-before-dispatch" });
+    expect(f.spawnCount()).toBe(0);
+  },
+);
 
 test("normal composer submission preserves declared choices and structured blocks while linking atomically", async () => {
   const f = await fixture();

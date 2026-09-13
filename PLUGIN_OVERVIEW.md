@@ -1,5 +1,8 @@
 # Task workspace
 
+Use the board header buttons to enroll a project or create a task in a modal.
+The main view stays focused on the Kanban board.
+
 Enroll an existing BB project backed by a GitButler main repository, assign its
 task prefix, and manage durable tasks on a manual board. Task identifiers,
 workflow, relationships, path references and external memory survive plugin
@@ -31,7 +34,8 @@ derives explicit-status tickets, references, diagnostics, SCCs and frontier,
 and refreshes through a view-scoped native watcher. It never fetches linked
 content or edits tickets, tasks or branches.
 
-The board header shows backup health and offers a manual export. The plugin
+The Backup and restore button below the board opens a dialog with backup
+health, daily backup retry and dataset restore. The plugin
 publishes one verified local archive on the first use of each local calendar
 day, keeps the latest seven valid daily archives, and can restore a whole
 dataset from a validated archive with a fresh dataset epoch, preserving the

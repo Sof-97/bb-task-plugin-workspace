@@ -25,17 +25,16 @@ repository content.
 Requires BB >= 0.42 with plugin SDK >= 0.4.47, Git and npm available to BB,
 and GitButler on the host for repository preparation. The verified host is macOS.
 
-Once this repository is published:
+Install from GitHub:
 
 ```sh
 bb plugin install https://github.com/Sof-97/bb-task-plugin-workspace
 ```
 
-This tracks the repository's default branch. For the first tagged release,
-after `v0.1.0` has been published:
+This tracks the repository's default branch. To follow tagged releases:
 
 ```sh
-bb plugin install 'git:https://github.com/Sof-97/bb-task-plugin-workspace.git@^0.1.0'
+bb plugin install 'git:https://github.com/Sof-97/bb-task-plugin-workspace.git@^0.1.1'
 bb plugin update task-workspace
 ```
 
@@ -74,7 +73,8 @@ bb plugin reload task-workspace
   **Never copy the live WAL database as a backup.**
 - **Back up / recover**: use _Export task data_ on the board for a
   human-chosen-path archive, and the daily automatic archive for the managed
-  seven-file retention. Restore is in the board header: it validates schema,
+  seven-file retention. Open _Backup and restore_ below the board to retry the daily backup or restore
+  an archive. Restore validates schema,
   relationships, paths and SHA-256 hashes, stages memory under a fresh dataset
   directory, switches the active dataset in one transaction and issues a fresh
   epoch. Restore never replays a thread start, send or capture; incomplete

@@ -363,35 +363,75 @@ const branchChoice = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("existing"), name: z.string() }).strict(),
   z.object({ kind: z.literal("new"), baseBranch: z.string() }).strict(),
 ]);
-export const threadEnvironment = z.discriminatedUnion("type", [
-  z.object({ type: z.literal("reuse"), environmentId: z.string() }).strict(),
-  z
-    .object({
-      type: z.literal("host"),
-      hostId: z.string().optional(),
-      workspace: z.discriminatedUnion("type", [
-        z
+export const threadEnvironment = z
+  .discriminatedUnion("type", [
+    z.object({ type: z.literal("reuse"), environmentId: z.string() }).strict(),
+    z
+      .object({
+        type: z.literal("host"),
+        hostId: z.string().optional(),
+        workspace: z.discriminatedUnion("type", [
+          z
+            .object({
+              type: z.literal("unmanaged"),
+              path: z.string().nullable(),
+              branch: branchChoice.optional(),
+            })
+            .strict(),
+          z
+            .object({
+              type: z.literal("managed-worktree"),
+              baseBranch: z.discriminatedUnion("kind", [
+                z
+                  .object({ kind: z.literal("named"), name: z.string() })
+                  .strict(),
+                z.object({ kind: z.literal("default") }).strict(),
+              ]),
+            })
+            .strict(),
+          z.object({ type: z.literal("personal") }).strict(),
+        ]),
+      })
+      .strict(),
+    z.object({ type: z.literal("project-default") }).strict(),
+    z
+      .object({
+        type: z.literal("provider"),
+        environmentProviderId: z.literal("project-checkout"),
+        machine: z
           .object({
-            type: z.literal("unmanaged"),
-            path: z.string().nullable(),
+            type: z.literal("existing"),
+            hostId: z.string(),
+          })
+          .strict(),
+        inputs: z
+          .object({
+            path: z.string().nullable().optional(),
             branch: branchChoice.optional(),
           })
-          .strict(),
-        z
-          .object({
-            type: z.literal("managed-worktree"),
-            baseBranch: z.discriminatedUnion("kind", [
-              z.object({ kind: z.literal("named"), name: z.string() }).strict(),
-              z.object({ kind: z.literal("default") }).strict(),
-            ]),
-          })
-          .strict(),
-        z.object({ type: z.literal("personal") }).strict(),
-      ]),
-    })
-    .strict(),
-  z.object({ type: z.literal("project-default") }).strict(),
-]);
+          .strict()
+          .nullable()
+          .default(null),
+      })
+      .strict(),
+  ])
+  .transform((environment) => {
+    // BB 0.43's composer converts legacy host seeds to provider requests.
+    // Normalize the equivalent checkout before validation and replay hashing,
+    // preserving explicit path/branch choices for the server's existing guards.
+    if (environment.type !== "provider") return environment;
+    return {
+      type: "host" as const,
+      hostId: environment.machine.hostId,
+      workspace: {
+        type: "unmanaged" as const,
+        path: environment.inputs?.path ?? null,
+        ...(environment.inputs?.branch === undefined
+          ? {}
+          : { branch: environment.inputs.branch }),
+      },
+    };
+  });
 export const newThreadRequest = z
   .object({
     projectId: z.string(),

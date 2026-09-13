@@ -105,6 +105,16 @@ test("board captures Markdown, opens drawer and preserves drafts on failure", as
     },
   );
   try {
+    const createButton = await slot.findByRole("button", {
+      name: "Create task",
+    });
+    expect(slot.queryByLabelText("Task title")).toBeNull();
+    expect(slot.queryByLabelText("Main repository")).toBeNull();
+    await waitFor(() =>
+      expect(createButton.hasAttribute("disabled")).toBe(false),
+    );
+    fireEvent.click(createButton);
+    await slot.findByRole("dialog", { name: "Create task" });
     await slot.findByText("Fixture (FX) — available");
     fireEvent.change(slot.getByLabelText("Capture project"), {
       target: { value: id },
@@ -120,6 +130,7 @@ test("board captures Markdown, opens drawer and preserves drafts on failure", as
     expect((slot.getByLabelText("Task title") as HTMLInputElement).value).toBe(
       "Retain draft",
     );
+    expect(slot.getByRole("dialog", { name: "Create task" })).toBeTruthy();
     reject = false;
     fireEvent.click(slot.getByText("Create Inbox task"));
     await waitFor(() =>
@@ -129,12 +140,90 @@ test("board captures Markdown, opens drawer and preserves drafts on failure", as
         options: { subPath: id },
       }),
     );
+    await waitFor(() => expect(slot.queryByRole("dialog")).toBeNull());
   } finally {
     slot.lifecycle.unmount();
   }
 });
 
-test("board shows backup health with last success and explicit daily retry", async () => {
+test("project enrollment stays in its dialog on failure and selects the new project for creation", async () => {
+  const app = await loadPluginApp(() => import("./app"));
+  let enrolled = false;
+  let reject = true;
+  const slot = renderSlot(
+    app.navPanels[0]!,
+    { subPath: "" },
+    {
+      rpc: {
+        list: () => ({
+          datasetEpoch: "enrollment-test",
+          enrollments: enrolled
+            ? [
+                {
+                  id: "enrolled-project",
+                  name: "Fixture",
+                  prefix: "FX",
+                  availability: "available",
+                },
+              ]
+            : [],
+          tasks: [],
+          candidates: [
+            {
+              projectId: "project-id",
+              sourceId: "source-id",
+              name: "Fixture",
+              repository: "/fixture",
+            },
+          ],
+          discoveryError: null,
+        }),
+        enroll: (input: unknown) => {
+          expect(input).toEqual({
+            projectId: "project-id",
+            sourceId: "source-id",
+            prefix: "FX",
+          });
+          if (reject) throw new Error("Enrollment unavailable");
+          enrolled = true;
+          return { id: "enrolled-project" };
+        },
+      },
+    },
+  );
+  try {
+    const trigger = await slot.findByRole("button", { name: "Enroll project" });
+    await waitFor(() => expect(trigger.hasAttribute("disabled")).toBe(false));
+    expect(slot.queryByLabelText("Main repository")).toBeNull();
+    fireEvent.click(trigger);
+    await slot.findByRole("dialog", { name: "Enroll a project" });
+    fireEvent.change(slot.getByLabelText("Main repository"), {
+      target: { value: "source-id" },
+    });
+    fireEvent.change(slot.getByLabelText("Task prefix"), {
+      target: { value: "FX" },
+    });
+    fireEvent.click(slot.getByRole("button", { name: "Enroll" }));
+    await slot.findByRole("alert");
+    expect(slot.getByRole("dialog").textContent).toContain(
+      "Enrollment unavailable",
+    );
+    expect((slot.getByLabelText("Task prefix") as HTMLInputElement).value).toBe(
+      "FX",
+    );
+    reject = false;
+    fireEvent.click(slot.getByRole("button", { name: "Enroll" }));
+    await waitFor(() => expect(slot.queryByRole("dialog")).toBeNull());
+    fireEvent.click(slot.getByRole("button", { name: "Create task" }));
+    expect(
+      (slot.getByLabelText("Capture project") as HTMLSelectElement).value,
+    ).toBe("enrolled-project");
+  } finally {
+    slot.lifecycle.unmount();
+  }
+});
+
+test("board reveals backup health and daily retry through its footer control", async () => {
   const app = await loadPluginApp(() => import("./app"));
   let degraded = true;
   const slot = renderSlot(
@@ -189,6 +278,14 @@ test("board shows backup health with last success and explicit daily retry", asy
     },
   );
   try {
+    const backupToggle = await slot.findByRole("button", {
+      name: "Backup and restore",
+    });
+    expect(
+      slot.queryByRole("button", { name: "Retry daily backup" }),
+    ).toBeNull();
+    fireEvent.click(backupToggle);
+    await slot.findByRole("button", { name: "Retry daily backup" });
     await slot.findByText(/Backup failed · Injected capture failure/);
     fireEvent.click(slot.getByText("Retry daily backup"));
     await waitFor(() => {
@@ -199,6 +296,11 @@ test("board shows backup health with last success and explicit daily retry", asy
         throw new Error("retry not invoked");
     });
     await slot.findByText(/Backup healthy · last success/);
+    fireEvent.click(slot.getByRole("button", { name: "Done" }));
+    await waitFor(() => expect(slot.queryByRole("dialog")).toBeNull());
+    expect(
+      slot.getByRole("button", { name: "Backup and restore" }),
+    ).toBeTruthy();
     expect(slot.inspection.navigateCalls).toHaveLength(0);
   } finally {
     slot.lifecycle.unmount();
@@ -287,7 +389,10 @@ test("restore flow previews the archive and restores only through explicit confi
     },
   );
   try {
-    fireEvent.click(await slot.findByText("Restore a dataset archive"));
+    fireEvent.click(
+      await slot.findByRole("button", { name: "Backup and restore" }),
+    );
+    await slot.findByRole("dialog", { name: "Backup and restore" });
     fireEvent.change(slot.getByLabelText("Archive path"), {
       target: { value: "/tmp/archive.task-workspace.json" },
     });
@@ -615,9 +720,9 @@ test("Wayfinder view keeps per-drawer selection, coalesces invalidation and reta
     await first.behavior.emitRealtime("changed", {});
     await waitFor(() => expect(reads).toBeGreaterThan(beforeFocus));
     await first.behavior.setRealtimeConnectionState("reconnecting");
+    const beforeReconnect = reads;
     await first.behavior.setRealtimeConnectionState("connected");
-    const afterReconnect = reads;
-    await waitFor(() => expect(reads).toBeGreaterThan(afterReconnect));
+    await waitFor(() => expect(reads).toBeGreaterThan(beforeReconnect));
   } finally {
     first.lifecycle.unmount();
     second.lifecycle.unmount();
@@ -760,15 +865,22 @@ test("two clients preserve stale drafts and require explicit reread or rebase", 
     const a = within(clientA.container);
     const b = within(clientB.container);
     try {
-      await a.findByDisplayValue("Original");
-      await b.findByDisplayValue("Original");
+      await a.findByRole("heading", { name: "Original" });
+      fireEvent.click(a.getByRole("button", { name: "Edit title" }));
+      await b.findByRole("heading", { name: "Original" });
+      fireEvent.click(b.getByRole("button", { name: "Edit title" }));
       fireEvent.change(b.getByLabelText("Edit title"), {
         target: { value: "Client B preserved draft" },
+      });
+      expect(b.queryByLabelText("Edit Markdown description")).toBeNull();
+      fireEvent.click(b.getByRole("button", { name: "Edit description" }));
+      fireEvent.change(b.getByLabelText("Edit Markdown description"), {
+        target: { value: "Independent description draft" },
       });
       fireEvent.change(a.getByLabelText("Edit title"), {
         target: { value: "Client A accepted" },
       });
-      fireEvent.click(a.getByText("Save details"));
+      fireEvent.click(a.getByText("Save title"));
       await waitFor(async () => {
         const current = (await call("list", null)) as {
           tasks: Array<{ title: string }>;
@@ -782,16 +894,37 @@ test("two clients preserve stale drafts and require explicit reread or rebase", 
       expect((b.getByLabelText("Edit title") as HTMLInputElement).value).toBe(
         "Client B preserved draft",
       );
-      fireEvent.click(b.getByText("Save details"));
+      fireEvent.click(b.getByText("Save title"));
       await b.findByText("Task changed; reload and reapply your edit.");
       fireEvent.click(b.getByText("Rebase draft on latest revision"));
-      fireEvent.click(b.getByText("Save details"));
+      fireEvent.click(b.getByText("Save title"));
       await waitFor(async () => {
         const current = (await call("list", null)) as {
           tasks: Array<{ title: string }>;
         };
         expect(current.tasks[0]?.title).toBe("Client B preserved draft");
       });
+      expect(
+        (b.getByLabelText("Edit Markdown description") as HTMLTextAreaElement)
+          .value,
+      ).toBe("Independent description draft");
+      const titleOnly = (await call("list", null)) as {
+        tasks: Array<{ description: string }>;
+      };
+      expect(titleOnly.tasks[0]?.description).toBe("# Original");
+      fireEvent.click(b.getByRole("button", { name: "Save description" }));
+      await waitFor(async () => {
+        const current = (await call("list", null)) as {
+          tasks: Array<{ title: string; description: string }>;
+        };
+        expect(current.tasks[0]).toMatchObject({
+          title: "Client B preserved draft",
+          description: "Independent description draft",
+        });
+      });
+      await waitFor(() =>
+        expect(b.queryByLabelText("Edit Markdown description")).toBeNull(),
+      );
       fireEvent.keyDown(window, { key: "Escape" });
       expect(clientB.inspection.navigateCalls).toContainEqual({
         method: "toPluginPanel",
@@ -1263,6 +1396,8 @@ test("normal new-thread composer forwards its submitted choices with stable task
   };
   const slot = renderSlot(app.navPanels[0]!, { subPath: active.id }, { rpc });
   try {
+    fireEvent.click(await slot.findByRole("button", { name: "Threads" }));
+    fireEvent.click(slot.getByRole("button", { name: "New thread" }));
     const composer = await slot.findByTestId("bb-new-thread-composer");
     expect(composer.getAttribute("data-default-project-id")).toBe("project-ui");
     expect(composer.getAttribute("data-default-environment")).toBe(
@@ -1364,6 +1499,8 @@ test("late start response cannot navigate or install state after task selection 
   const slot = renderSlot(app.navPanels[0]!, { subPath: first.id }, { rpc });
   const Panel = app.navPanels[0]!.component;
   try {
+    fireEvent.click(await slot.findByRole("button", { name: "Threads" }));
+    fireEvent.click(slot.getByRole("button", { name: "New thread" }));
     fireEvent.click(await slot.findByTestId("bb-new-thread-composer-submit"));
     await waitFor(() =>
       expect(
@@ -1373,6 +1510,8 @@ test("late start response cannot navigate or install state after task selection 
       ).toBe(true),
     );
     slot.rerender(<Panel subPath={second.id} />);
+    fireEvent.click(await slot.findByRole("button", { name: "Threads" }));
+    fireEvent.click(slot.getByRole("button", { name: "New thread" }));
     await waitFor(() =>
       expect(
         slot
@@ -1758,6 +1897,8 @@ test("lost linked response keeps original identity for explicit replay without a
   };
   const slot = renderSlot(app.navPanels[0]!, { subPath: active.id }, { rpc });
   try {
+    fireEvent.click(await slot.findByRole("button", { name: "Threads" }));
+    fireEvent.click(slot.getByRole("button", { name: "New thread" }));
     const input = await slot.findByTestId("bb-new-thread-composer-input");
     fireEvent.change(input, { target: { value: "Preserve one submission" } });
     fireEvent.click(slot.getByTestId("bb-new-thread-composer-submit"));
