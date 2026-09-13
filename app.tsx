@@ -170,9 +170,16 @@ function Board({ subPath }: PluginNavPanelProps) {
   );
   const [memoryDraftConflict, setMemoryDraftConflict] = useState(false);
   const [memoryRestoreKnown, setMemoryRestoreKnown] = useState("");
+  const [deleteOpen, setDeleteOpen] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState<{
+    id: string;
+    datasetEpoch: string;
+    expectedRevision: number;
+  } | null>(null);
   const [taskSection, setTaskSection] = useState("Overview");
   const [newThreadOpen, setNewThreadOpen] = useState(false);
   useEffect(() => {
+    setDeleteOpen(false);
     setTaskSection("Overview");
     setEditingTitle(false);
     setEditingDescription(false);
@@ -1306,6 +1313,60 @@ function Board({ subPath }: PluginNavPanelProps) {
                   </div>
                 )}
               </div>
+              <Dialog open={deleteOpen} onOpenChange={setDeleteOpen}>
+                <DialogTrigger asChild>
+                  <Button
+                    variant="destructive"
+                    disabled={busy}
+                    onClick={() =>
+                      setDeleteTarget({
+                        id: selected.id,
+                        datasetEpoch,
+                        expectedRevision: selected.revision,
+                      })
+                    }
+                  >
+                    Delete task
+                  </Button>
+                </DialogTrigger>
+                <DialogContent>
+                  <DialogHeader>
+                    <DialogTitle>Delete {selected.displayId}?</DialogTitle>
+                    <DialogDescription>
+                      This permanently removes the task and its links from the
+                      board. Linked BB threads are kept and can be linked to
+                      another task. External files, task memory files and
+                      repository branches are kept.
+                    </DialogDescription>
+                  </DialogHeader>
+                  {error && (
+                    <p role="alert" className="text-destructive">
+                      {error}
+                    </p>
+                  )}
+                  <DialogFooter>
+                    <DialogClose asChild>
+                      <Button variant="outline" disabled={busy}>
+                        Cancel
+                      </Button>
+                    </DialogClose>
+                    <Button
+                      variant="destructive"
+                      disabled={busy}
+                      onClick={() =>
+                        void run(async () => {
+                          if (!deleteTarget) return;
+                          await rpc.call("deleteTask", deleteTarget);
+                          setDeleteOpen(false);
+                          navigate.toPluginPanel("board");
+                        })
+                      }
+                    >
+                      Delete task and keep threads
+                    </Button>
+                  </DialogFooter>
+                </DialogContent>
+              </Dialog>
               <Button
                 variant="outline"
                 onClick={() => navigate.toPluginPanel("board")}

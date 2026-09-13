@@ -683,6 +683,10 @@ export const rpcContract = defineRpcContract({
   },
   enroll: { input: enrollInput, output: enrollment },
   create: { input: createInput, output: task },
+  deleteTask: {
+    input: revisionInput.strict(),
+    output: z.object({ id: z.string().uuid() }),
+  },
   updateDetails: {
     input: revisionInput
       .extend({

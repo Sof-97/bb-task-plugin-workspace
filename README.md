@@ -13,6 +13,19 @@ starts, Wayfinder, backup/export, restore and capture are implemented and
 exercised by the automated gate below. Capture creates no branch, thread or
 repository content.
 
+## Delete a task
+
+Open the task details, choose **Delete task**, then confirm **Delete task and keep
+threads**. This removes the task, its relationships and plugin-owned links. BB
+threads remain available and can be linked to another task. Repository branches,
+attached files and external task memory files are kept. Task numbers are never
+reused. Pending memory operations or unresolved thread starts must be resolved
+(or the thread start explicitly abandoned) before deletion.
+
+Quick-capture request identities are retained after deletion: retrying an old
+request returns `TASK_DELETED` and never recreates the task. Backups made before
+deletion still contain the task; restoring one restores its saved records.
+
 ## Verified runtime
 
 - BB CLI/host **0.42.1**; GitButler **0.22.3**.
@@ -34,7 +47,7 @@ bb plugin install https://github.com/Sof-97/bb-task-plugin-workspace
 This tracks the repository's default branch. To follow tagged releases:
 
 ```sh
-bb plugin install 'git:https://github.com/Sof-97/bb-task-plugin-workspace.git@^0.1.2'
+bb plugin install 'git:https://github.com/Sof-97/bb-task-plugin-workspace.git@^0.1.3'
 bb plugin update task-workspace
 ```
 

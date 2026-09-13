@@ -957,6 +957,7 @@ export function createMemoryCoordinator(dependencies: Dependencies) {
       return action({ read: () => inspect(taskId) });
     });
   return {
+    withTaskLocks,
     initialize,
     read: (taskId: string) => coordinate(taskId, () => inspect(taskId)),
     save,

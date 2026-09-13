@@ -268,7 +268,7 @@ test("preview shows archive facts and restore replaces the whole dataset under a
   expect(preview.counts.enrollments).toBe(1);
   expect(preview.counts.memories).toBe(1);
   expect(preview.current.tasks).toBe(2);
-  expect(preview.schemaVersion).toBe(11);
+  expect(preview.schemaVersion).toBe(12);
   expect(preview.source.datasetId).toBe((await f.dirs()).datasetId);
   expect(preview.warnings.some((w) => /older snapshot/i.test(w))).toBe(true);
 
@@ -397,7 +397,7 @@ test("restore refuses recovery-only, corrupt and newer archives at preview", asy
   ).rejects.toThrow();
   // Newer schema.
   const parsed = JSON.parse(good.toString("utf8")) as ArchiveEnvelope;
-  parsed.manifest.schemaVersion = 12;
+  parsed.manifest.schemaVersion = 13;
   const newerPath = join(f.root, "newer.task-workspace.json");
   await writeFile(newerPath, rebuild(parsed));
   await expect(f.call("previewRestore", { path: newerPath })).rejects.toThrow(
@@ -504,7 +504,7 @@ test("structurally invalid complete archives are rejected before touching active
     withTable(original, "tasks", (rows) => {
       rows[0]!.number = 5;
     }),
-    /missing below nextNumber/,
+    /at or above its next allocation/,
   ] as [string, Uint8Array, RegExp]);
   // Prepared memory operation in a complete archive.
   {
@@ -997,7 +997,7 @@ test("a schema-9 archive is migrated in staging and restored", async () => {
     warnings: string[];
   };
   expect(preview.schemaVersion).toBe(9);
-  expect(preview.warnings.some((w) => /migrated to schema 11/.test(w))).toBe(
+  expect(preview.warnings.some((w) => /migrated to schema 12/.test(w))).toBe(
     true,
   );
   const result = (await f.call("restoreDataset", {
@@ -1018,7 +1018,7 @@ test("a schema-9 archive is migrated in staging and restored", async () => {
         c: number;
       }
     ).c,
-  ).toBe(11);
+  ).toBe(12);
   expect(
     (
       f.db.prepare("SELECT COUNT(*) AS c FROM wayfinder_attachments").get() as {
@@ -1368,7 +1368,7 @@ test("staging validation reproduces the installed schema and reads migrated rows
     },
     schema,
   });
-  expect(plan.schemaVersion).toBe(11);
+  expect(plan.schemaVersion).toBe(12);
   expect(plan.taskCount).toBe(1);
   expect(plan.memoryHashByTask.size).toBe(1);
   void RESTORE_RECOVERY_STATEMENTS;

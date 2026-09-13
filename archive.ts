@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 
 export const ARCHIVE_FORMAT_VERSION = 1;
-export const ARCHIVE_SCHEMA_VERSION = 11;
+export const ARCHIVE_SCHEMA_VERSION = 12;
 export const ARCHIVE_LIMITS = Object.freeze({
   archiveBytes: 16 * 1024 * 1024,
   entries: 4096,

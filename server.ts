@@ -165,6 +165,21 @@ const ARCHIVE_TABLES_BY_SCHEMA = [
     "wayfinder_attachments",
     "capture_requests",
   ],
+  [
+    "dataset",
+    "enrollments",
+    "tasks",
+    "pending_operations",
+    "task_relationships",
+    "attached_paths",
+    "repository_workspaces",
+    "memory_operations",
+    "memory_operation_ids",
+    "thread_links",
+    "thread_start_operations",
+    "wayfinder_attachments",
+    "capture_requests",
+  ],
 ] as const;
 
 /** Safely quote an arbitrary SQLite identifier for interpolation. */
@@ -389,6 +404,18 @@ CREATE INDEX thread_start_operations_by_task ON thread_start_operations(taskId,c
 );
 CREATE INDEX capture_requests_by_task ON capture_requests(taskId);
 CREATE INDEX capture_requests_by_epoch ON capture_requests(datasetEpoch,updatedAt);`,
+  `CREATE TABLE capture_requests_v12 (
+  datasetEpoch TEXT NOT NULL, requestId TEXT NOT NULL, projectId TEXT NOT NULL,
+  payloadHash TEXT NOT NULL CHECK(length(payloadHash)=64), taskId TEXT NOT NULL,
+  state TEXT NOT NULL CHECK(state IN ('allocated','accepted','recovery-required','deleted')),
+  receiptJson TEXT, error TEXT, createdAt TEXT NOT NULL, updatedAt TEXT NOT NULL,
+  PRIMARY KEY(datasetEpoch,requestId)
+);
+INSERT INTO capture_requests_v12 SELECT * FROM capture_requests;
+DROP TABLE capture_requests;
+ALTER TABLE capture_requests_v12 RENAME TO capture_requests;
+CREATE INDEX capture_requests_by_task ON capture_requests(taskId);
+CREATE INDEX capture_requests_by_epoch ON capture_requests(datasetEpoch,updatedAt);`,
 ];
 
 /**
@@ -540,205 +567,222 @@ export default async function plugin(
       `Task Workspace startup refused; no migration was applied. ${reason}`,
     );
   };
-  // Fail-closed pre-migration protective capture. Before any pending
-  // migration step is applied to an existing dataset, a complete, verified
-  // archive of the installed schema is published at its current version.
-  // A missing dataset identity/host, incoherent relationships, unresolved
-  // memory metadata or a capture that cannot be verified refuses the
-  // migration outright. Additive or destructive, the dataset is never
-  // migrated without a durable protective copy first.
-  if (
-    startupLedger.kind === "applied" &&
-    startupLedger.count > 0 &&
-    startupLedger.count < DURABLE_MIGRATIONS.length
-  ) {
-    const datasetRow = (() => {
-      try {
-        return db.prepare("SELECT * FROM dataset").get() as
-          { id: string; hostId: string | null } | undefined;
-      } catch (error) {
-        refuseMigration(
-          `The dataset identity could not be read from the existing schema: ${String(error instanceof Error ? error.message : error).slice(0, 500)}`,
-        );
-      }
-    })();
-    if (!datasetRow)
-      refuseMigration(
-        "The existing schema has no dataset identity; a protective archive is not possible.",
-      );
-    if (!datasetRow!.hostId)
-      refuseMigration(
-        "The existing schema has no enrolled host; canonical memory cannot be read for a verified protective archive.",
-      );
-    const datasetIdentity = {
-      datasetId: datasetRow!.id,
-      hostId: datasetRow!.hostId as string,
-    };
-    try {
-      // Transactional structured snapshot with relationship and pending-state
-      // validation, followed by bounded memory reads and a full recheck.
-      const snapshot = db.transaction(() => {
-        const foreignKeys = db.prepare("PRAGMA foreign_key_check").all();
-        if (foreignKeys.length)
-          throw new Error(
-            "SQLite relationship validation failed; the protective archive would not be coherent.",
+  const initializeDatabase = async () => {
+    // Fail-closed pre-migration protective capture. Before any pending
+    // migration step is applied to an existing dataset, a complete, verified
+    // archive of the installed schema is published at its current version.
+    // A missing dataset identity/host, incoherent relationships, unresolved
+    // memory metadata or a capture that cannot be verified refuses the
+    // migration outright. Additive or destructive, the dataset is never
+    // migrated without a durable protective copy first.
+    if (
+      startupLedger.kind === "applied" &&
+      startupLedger.count > 0 &&
+      startupLedger.count < DURABLE_MIGRATIONS.length
+    ) {
+      const datasetRow = (() => {
+        try {
+          return db.prepare("SELECT * FROM dataset").get() as
+            { id: string; hostId: string | null } | undefined;
+        } catch (error) {
+          refuseMigration(
+            `The dataset identity could not be read from the existing schema: ${String(error instanceof Error ? error.message : error).slice(0, 500)}`,
           );
-        if (
-          db
-            .prepare(
-              "SELECT 1 FROM memory_operations WHERE state='prepared' LIMIT 1",
-            )
-            .get()
-        )
-          throw new Error(
-            "A memory operation remains prepared; the protective capture would be incoherent.",
-          );
-        const rows = db
-          .prepare(
-            "SELECT t.id AS id,t.displayId AS displayId,t.memoryHash AS memoryHash,t.memoryRevision AS memoryRevision,t.memoryState AS memoryState,e.hostId AS hostId FROM tasks t JOIN enrollments e ON e.id=t.enrollmentId ORDER BY t.id",
-          )
-          .all() as Array<{
-          id: string;
-          displayId: string;
-          memoryHash: string | null;
-          memoryRevision: number;
-          memoryState: string;
-          hostId: string;
-        }>;
-        return {
-          rows,
-          tables: logicalArchiveTables(db, startupLedger.count).tables,
-        };
+        }
       })();
-      const readProtectedMemory = async (
-        item: (typeof snapshot.rows)[number],
-      ) => {
-        if (
-          item.memoryRevision < 1 ||
-          item.memoryState !== "healthy" ||
-          !item.memoryHash
-        )
-          throw new Error(
-            `Task ${item.displayId} has unresolved canonical memory metadata; the protective archive would be incomplete.`,
+      if (!datasetRow)
+        refuseMigration(
+          "The existing schema has no dataset identity; a protective archive is not possible.",
+        );
+      if (!datasetRow!.hostId)
+        refuseMigration(
+          "The existing schema has no enrolled host; canonical memory cannot be read for a verified protective archive.",
+        );
+      const datasetIdentity = {
+        datasetId: datasetRow!.id,
+        hostId: datasetRow!.hostId as string,
+      };
+      try {
+        // Transactional structured snapshot with relationship and pending-state
+        // validation, followed by bounded memory reads and a full recheck.
+        const snapshot = db.transaction(() => {
+          const foreignKeys = db.prepare("PRAGMA foreign_key_check").all();
+          if (foreignKeys.length)
+            throw new Error(
+              "SQLite relationship validation failed; the protective archive would not be coherent.",
+            );
+          if (
+            db
+              .prepare(
+                "SELECT 1 FROM memory_operations WHERE state='prepared' LIMIT 1",
+              )
+              .get()
+          )
+            throw new Error(
+              "A memory operation remains prepared; the protective capture would be incoherent.",
+            );
+          const rows = db
+            .prepare(
+              "SELECT t.id AS id,t.displayId AS displayId,t.memoryHash AS memoryHash,t.memoryRevision AS memoryRevision,t.memoryState AS memoryState,e.hostId AS hostId FROM tasks t JOIN enrollments e ON e.id=t.enrollmentId ORDER BY t.id",
+            )
+            .all() as Array<{
+            id: string;
+            displayId: string;
+            memoryHash: string | null;
+            memoryRevision: number;
+            memoryState: string;
+            hostId: string;
+          }>;
+          return {
+            rows,
+            tables: logicalArchiveTables(db, startupLedger.count).tables,
+          };
+        })();
+        const readProtectedMemory = async (
+          item: (typeof snapshot.rows)[number],
+        ) => {
+          if (
+            item.memoryRevision < 1 ||
+            item.memoryState !== "healthy" ||
+            !item.memoryHash
+          )
+            throw new Error(
+              `Task ${item.displayId} has unresolved canonical memory metadata; the protective archive would be incomplete.`,
+            );
+          const observed = await host.call(
+            "readMemory",
+            {
+              dataset: datasetIdentity.datasetId,
+              taskId: item.id,
+            },
+            { hostId: item.hostId },
           );
-        const observed = await host.call(
-          "readMemory",
+          if (observed.state !== "present" || observed.hash !== item.memoryHash)
+            throw new Error(
+              `Task ${item.displayId} memory is missing or does not match committed metadata.`,
+            );
+          const bytes = Buffer.from(observed.bytesBase64, "base64");
+          if (
+            createHash("sha256").update(bytes).digest("hex") !== observed.hash
+          )
+            throw new Error(
+              `Task ${item.displayId} memory bytes failed verification.`,
+            );
+          return bytes;
+        };
+        const memories: ArchiveMemory[] = [];
+        const firstPass = new Map<string, string>();
+        for (const item of snapshot.rows) {
+          const bytes = await readProtectedMemory(item);
+          firstPass.set(item.id, bytes.toString("base64"));
+          memories.push({ taskId: item.id, bytes });
+        }
+        // Bounded recheck: an external change between the reads invalidates the
+        // protective attempt and refuses the migration.
+        for (const item of snapshot.rows) {
+          const bytes = await readProtectedMemory(item);
+          if (bytes.toString("base64") !== firstPass.get(item.id))
+            throw new Error(
+              `Task ${item.displayId} memory changed while the protective archive was captured.`,
+            );
+        }
+        const clock = await host.call(
+          "archiveStatus",
           {
             dataset: datasetIdentity.datasetId,
-            taskId: item.id,
+            hostId: datasetIdentity.hostId,
           },
-          { hostId: item.hostId },
+          { hostId: datasetIdentity.hostId },
         );
-        if (observed.state !== "present" || observed.hash !== item.memoryHash)
+        const archive = encodeArchive({
+          archiveKind: "complete",
+          schemaVersion: startupLedger.count,
+          createdAt: clock.observedAt,
+          localDay: clock.localDay,
+          source: datasetIdentity,
+          diagnostics: [],
+          extensions: {
+            adapter: "task-workspace-logical/v1",
+            purpose: "pre-migration-protective",
+          },
+          tables: snapshot.tables,
+          memories,
+        });
+        const published = await host.call(
+          "publishArchive",
+          {
+            dataset: datasetIdentity.datasetId,
+            hostId: datasetIdentity.hostId,
+            kind: "protective",
+            archiveBase64: Buffer.from(archive).toString("base64"),
+            destination: null,
+          },
+          { hostId: datasetIdentity.hostId },
+        );
+        if (published.state === "degraded")
           throw new Error(
-            `Task ${item.displayId} memory is missing or does not match committed metadata.`,
+            `Protective pre-migration archive was not confirmed healthy: ${published.error ?? "unknown error"}`,
           );
-        const bytes = Buffer.from(observed.bytesBase64, "base64");
-        if (createHash("sha256").update(bytes).digest("hex") !== observed.hash)
-          throw new Error(
-            `Task ${item.displayId} memory bytes failed verification.`,
-          );
-        return bytes;
-      };
-      const memories: ArchiveMemory[] = [];
-      const firstPass = new Map<string, string>();
-      for (const item of snapshot.rows) {
-        const bytes = await readProtectedMemory(item);
-        firstPass.set(item.id, bytes.toString("base64"));
-        memories.push({ taskId: item.id, bytes });
-      }
-      // Bounded recheck: an external change between the reads invalidates the
-      // protective attempt and refuses the migration.
-      for (const item of snapshot.rows) {
-        const bytes = await readProtectedMemory(item);
-        if (bytes.toString("base64") !== firstPass.get(item.id))
-          throw new Error(
-            `Task ${item.displayId} memory changed while the protective archive was captured.`,
-          );
-      }
-      const clock = await host.call(
-        "archiveStatus",
-        {
-          dataset: datasetIdentity.datasetId,
-          hostId: datasetIdentity.hostId,
-        },
-        { hostId: datasetIdentity.hostId },
-      );
-      const archive = encodeArchive({
-        archiveKind: "complete",
-        schemaVersion: startupLedger.count,
-        createdAt: clock.observedAt,
-        localDay: clock.localDay,
-        source: datasetIdentity,
-        diagnostics: [],
-        extensions: {
-          adapter: "task-workspace-logical/v1",
-          purpose: "pre-migration-protective",
-        },
-        tables: snapshot.tables,
-        memories,
-      });
-      const published = await host.call(
-        "publishArchive",
-        {
-          dataset: datasetIdentity.datasetId,
-          hostId: datasetIdentity.hostId,
-          kind: "protective",
-          archiveBase64: Buffer.from(archive).toString("base64"),
-          destination: null,
-        },
-        { hostId: datasetIdentity.hostId },
-      );
-      if (published.state === "degraded")
+      } catch (error) {
+        const message = String(error instanceof Error ? error.message : error);
         throw new Error(
-          `Protective pre-migration archive was not confirmed healthy: ${published.error ?? "unknown error"}`,
+          `Refusing to apply pending migrations: the protective archive of the installed dataset could not be created or verified. ${message}`,
         );
-    } catch (error) {
-      const message = String(error instanceof Error ? error.message : error);
-      throw new Error(
-        `Refusing to apply pending migrations: the protective archive of the installed dataset could not be created or verified. ${message}`,
-      );
+      }
     }
-  }
-  bb.storage.migrate(db, [...DURABLE_MIGRATIONS]);
+    bb.storage.migrate(db, [...DURABLE_MIGRATIONS]);
 
-  const recoveredAt = new Date().toISOString();
-  db.prepare(
-    `UPDATE thread_start_operations
+    const recoveredAt = new Date().toISOString();
+    db.prepare(
+      `UPDATE thread_start_operations
      SET state='uncertain',
          error='Plugin restarted after dispatch was recorded. BB spawn or its first message may have occurred; no external effect will be replayed automatically.',
          updatedAt=?
      WHERE state='dispatching'`,
-  ).run(recoveredAt);
-  db.prepare(
-    `UPDATE thread_start_operations
+    ).run(recoveredAt);
+    db.prepare(
+      `UPDATE thread_start_operations
      SET state='failed-before-dispatch',
          error='Plugin restarted from a prepared operation. Dispatch was never recorded and no external effect will be replayed automatically; abandon before a new attempt.',
          updatedAt=?
      WHERE state='prepared'`,
-  ).run(recoveredAt);
-  if (!db.prepare("SELECT id FROM dataset").get())
-    db.prepare("INSERT INTO dataset(id) VALUES(?)").run(randomUUID());
+    ).run(recoveredAt);
+    if (!db.prepare("SELECT id FROM dataset").get())
+      db.prepare("INSERT INTO dataset(id) VALUES(?)").run(randomUUID());
+  };
+  const needsMigration =
+    startupLedger.kind === "applied" &&
+    startupLedger.count > 0 &&
+    startupLedger.count < DURABLE_MIGRATIONS.length;
+  let initialization: Promise<void> | undefined;
+  if (!needsMigration) initialization = initializeDatabase();
+  if (initialization) await initialization;
+  const ensureDatabaseReady = () => (initialization ??= initializeDatabase());
   const dataset = () =>
     db.prepare("SELECT * FROM dataset").get() as {
       id: string;
       hostId: string | null;
     };
-  // Startup reconciliation of restore staging left by an interrupted switch:
-  // a marker whose dataset id is the active dataset is the committed restore
-  // (drop the marker only), while any other fully-owned marker directory is
-  // abandoned staging and is removed. Unrelated or active roots are untouched.
-  {
-    const startupDataset = dataset();
-    if (startupDataset.hostId)
-      await host
-        .call(
-          "reconcileStagedDatasets",
-          { activeDataset: startupDataset.id },
-          { hostId: startupDataset.hostId },
-        )
-        .catch(() => undefined);
-  }
+  let startupReady: Promise<void> | undefined;
+  const ensureReady = () =>
+    (startupReady ??= (async () => {
+      await ensureDatabaseReady();
+      // Startup reconciliation of restore staging left by an interrupted switch:
+      // a marker whose dataset id is the active dataset is the committed restore
+      // (drop the marker only), while any other fully-owned marker directory is
+      // abandoned staging and is removed. Unrelated or active roots are untouched.
+      {
+        const startupDataset = dataset();
+        if (startupDataset.hostId)
+          await host
+            .call(
+              "reconcileStagedDatasets",
+              { activeDataset: startupDataset.id },
+              { hostId: startupDataset.hostId },
+            )
+            .catch(() => undefined);
+      }
+    })());
   type WayfinderViewSession = {
     viewId: string;
     taskId: string;
@@ -1821,7 +1865,7 @@ export default async function plugin(
     projectId: string;
     payloadHash: string;
     taskId: string;
-    state: "allocated" | "accepted" | "recovery-required";
+    state: "allocated" | "accepted" | "recovery-required" | "deleted";
     receiptJson: string | null;
     createdAt: string;
     updatedAt: string;
@@ -1857,12 +1901,21 @@ export default async function plugin(
   const captureRequestRow = (
     epoch: string,
     requestId: string,
-  ): CaptureRequestRow | undefined =>
-    db
+  ): CaptureRequestRow | undefined => {
+    const row = db
       .prepare(
         "SELECT * FROM capture_requests WHERE datasetEpoch=? AND requestId=?",
       )
       .get(epoch, requestId) as CaptureRequestRow | undefined;
+    if (row?.state === "deleted")
+      throw new CaptureHttpError(
+        "TASK_DELETED",
+        409,
+        "This task was deleted. Use a new request ID only if you intend to create a new task.",
+        { requestId },
+      );
+    return row;
+  };
 
   const captureStoredReceipt = (json: string | null): CaptureReceipt | null => {
     if (!json) return null;
@@ -1911,7 +1964,8 @@ export default async function plugin(
         if (row.payloadHash !== capturePayloadHash(submission))
           return { kind: "conflict" };
         if (row.state === "accepted") return captureVerifiedReplay(row);
-        if (row.state === "recovery-required") return { kind: "recovery" };
+        if (row.state === "recovery-required" || row.state === "deleted")
+          return { kind: "recovery" };
         return { kind: "resume", taskId: row.taskId };
       }
       const enrollment = db
@@ -1933,7 +1987,8 @@ export default async function plugin(
         if (row.payloadHash !== capturePayloadHash(submission))
           return { kind: "conflict" };
         if (row.state === "accepted") return captureVerifiedReplay(row);
-        if (row.state === "recovery-required") return { kind: "recovery" };
+        if (row.state === "recovery-required" || row.state === "deleted")
+          return { kind: "recovery" };
         return { kind: "resume", taskId: row.taskId };
       }
       const enrollment = db
@@ -3242,6 +3297,7 @@ export default async function plugin(
   };
   const runAgentTool = async (action: () => Promise<unknown>) => {
     try {
+      await ensureReady();
       // Fire-and-forget for the same admission-ordering reason as RPC
       // mutation routes; the maintenance gate coordinates with the action.
       void ensureDailyBackup().catch(() => undefined);
@@ -3410,6 +3466,14 @@ export default async function plugin(
       }),
   });
   bb.agents.configure((ctx) => {
+    // Configuration is synchronous in the pinned SDK. It only reads the
+    // stable enrollment identity; tool execution waits for initialization.
+    if (
+      needsMigration &&
+      startupLedger.kind === "applied" &&
+      startupLedger.count < 2
+    )
+      return { tools: [], skills: [] };
     const enrolled = db
       .prepare("SELECT 1 FROM enrollments WHERE projectId=?")
       .get(ctx.project.id);
@@ -3943,6 +4007,64 @@ export default async function plugin(
       bb.realtime.publish("changed", {});
       return result;
     },
+    deleteTask: ({ id, datasetEpoch, expectedRevision }) =>
+      serializeRepository(() =>
+        memoryCoordinator.withTaskLocks([id], async () => {
+          db.transaction(() => {
+            assertDataset(datasetEpoch);
+            const current = rawTask(id);
+            if (!current) throw new Error("Task not found.");
+            if (current.revision !== expectedRevision)
+              throw new Error("Task changed; reload before deleting.");
+            if (
+              db
+                .prepare(
+                  "SELECT id FROM memory_operations WHERE taskId=? AND state='prepared'",
+                )
+                .get(id)
+            )
+              throw new Error(
+                "Resolve the pending memory operation before deleting this task.",
+              );
+            if (
+              db
+                .prepare(
+                  "SELECT id FROM thread_start_operations WHERE taskId=? AND state IN ('dispatching','awaiting-link','uncertain') AND abandonedAt IS NULL",
+                )
+                .get(id)
+            )
+              throw new Error(
+                "Resolve or abandon the pending thread start before deleting this task. Threads will be kept.",
+              );
+            const now = new Date().toISOString();
+            // Inbound relationships change other tasks, so invalidate their drafts too.
+            db.prepare(
+              "UPDATE tasks SET revision=revision+1,updatedAt=?,attribution='rpc:deleteTask',attributionAt=? WHERE id IN (SELECT taskId FROM task_relationships WHERE targetTaskId=?)",
+            ).run(now, now, id);
+            db.prepare(
+              "DELETE FROM task_relationships WHERE taskId=? OR targetTaskId=?",
+            ).run(id, id);
+            // Keep capture request identities so an old retry cannot recreate a deleted task.
+            db.prepare(
+              "UPDATE capture_requests SET state='deleted',receiptJson=NULL,error=NULL,updatedAt=? WHERE taskId=?",
+            ).run(now, id);
+            for (const table of [
+              "thread_links",
+              "thread_start_operations",
+              "wayfinder_attachments",
+              "attached_paths",
+              "repository_workspaces",
+              "pending_operations",
+              "memory_operations",
+              "memory_operation_ids",
+            ])
+              db.prepare(`DELETE FROM ${table} WHERE taskId=?`).run(id);
+            db.prepare("DELETE FROM tasks WHERE id=?").run(id);
+          })();
+          bb.realtime.publish("changed", {});
+          return { id };
+        }),
+      ),
     updateDetails: ({
       id,
       datasetEpoch,
@@ -4878,7 +5000,23 @@ export default async function plugin(
         maintenance.runMutation(() => Promise.resolve(handler(input)));
     },
   }) as RpcHandlers;
-  bb.rpc.register(rpcContract, admittedRpcHandlers);
+  // Host RPC is only available after factory registration. Migrations and
+  // their protective backup run once on first use; every entry point waits.
+  // A failed initialization stays failed until an explicit plugin reload.
+  bb.rpc.register(
+    rpcContract,
+    new Proxy(admittedRpcHandlers, {
+      get(target, property, receiver) {
+        return async (input: unknown) => {
+          await ensureReady();
+          const handler = Reflect.get(target, property, receiver) as (
+            input: unknown,
+          ) => unknown;
+          return handler(input);
+        };
+      },
+    }),
+  );
   // Token-authenticated capture routes under the plugin HTTP namespace.
   // The host verifies the token value; the handlers additionally enforce
   // header-only transport and bounded bodies, and never echo secrets or
@@ -4897,6 +5035,7 @@ export default async function plugin(
           return context.json(captureErrorBody(captureTokenFailure), 401);
         if (!context.req.raw.headers.get("x-bb-plugin-token"))
           return context.json(captureErrorBody(captureTokenFailure), 401);
+        await ensureReady();
         void ensureDailyBackup().catch(() => undefined);
         const result = await maintenance.runMutation(async () => {
           await testHooks.captureDiscoveryGate?.();
@@ -5010,6 +5149,7 @@ export default async function plugin(
           return context.json(captureErrorBody(captureTokenFailure), 401);
         if (!context.req.raw.headers.get("x-bb-plugin-token"))
           return context.json(captureErrorBody(captureTokenFailure), 401);
+        await ensureReady();
         void ensureDailyBackup().catch(() => undefined);
         const submission = await readCaptureSubmission(context.req.raw);
         const outcome = await captureSubmit(submission);

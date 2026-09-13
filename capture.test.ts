@@ -725,7 +725,7 @@ test("schema-11 archives carry capture records and restore quarantines a restore
     schemaVersion: number;
     counts: { tasks: number };
   };
-  expect(preview.schemaVersion).toBe(11);
+  expect(preview.schemaVersion).toBe(12);
   const result = (await f.call("restoreDataset", {
     path: craftedPath,
     expectedDigest: preview.digest,
@@ -813,7 +813,7 @@ test("a schema-11 archive carrying a quarantined capture request stays restorabl
   const secondPreview = (await f.call("previewRestore", {
     path: secondPath,
   })) as { digest: string; schemaVersion: number };
-  expect(secondPreview.schemaVersion).toBe(11);
+  expect(secondPreview.schemaVersion).toBe(12);
   const second = (await f.call("restoreDataset", {
     path: secondPath,
     expectedDigest: secondPreview.digest,
@@ -1039,7 +1039,7 @@ test("a schema-10 archive is still restored and clears capture_requests under th
     warnings: string[];
   };
   expect(preview.schemaVersion).toBe(10);
-  expect(preview.warnings.some((w) => /migrated to schema 11/.test(w))).toBe(
+  expect(preview.warnings.some((w) => /migrated to schema 12/.test(w))).toBe(
     true,
   );
   const before = f.dirs().datasetId;
@@ -1205,4 +1205,47 @@ test("discovery reads the dataset epoch inside the admitted mutation so restored
   expect(body.datasetEpoch).toBe(nextEpoch);
   expect(body.projects).toHaveLength(1);
   expect(body.projects[0]!.enrollmentId).toBe(nextEnrollment);
+});
+
+test("deleted captured task cannot be recreated by retry, including after backup and restore", async () => {
+  const f = await fixture();
+  const submission = f.submission();
+  const created = await f.postCapture(JSON.stringify(submission));
+  const body = (await created.json()) as Envelope;
+  const id = body.receipt.taskUuid;
+  const row = f.db.prepare("SELECT revision FROM tasks WHERE id=?").get(id) as {
+    revision: number;
+  };
+  await f.call("deleteTask", {
+    id,
+    datasetEpoch: submission.datasetEpoch,
+    expectedRevision: row.revision,
+  });
+  expect(f.count("tasks")).toBe(0);
+  const retry = await f.postCapture(JSON.stringify(submission));
+  expect(retry.status).toBe(409);
+  expect(await retry.json()).toMatchObject({ error: { code: "TASK_DELETED" } });
+  expect(f.count("tasks")).toBe(0);
+  const path = join(f.root, "deleted.task-workspace.json");
+  await f.call("exportBackup", { destination: path });
+  const preview = (await f.call("previewRestore", { path })) as {
+    digest: string;
+  };
+  await f.call("restoreDataset", {
+    path,
+    expectedDigest: preview.digest,
+    currentDatasetEpoch: submission.datasetEpoch,
+    confirmReplace: true,
+  });
+  expect(
+    f.db
+      .prepare("SELECT state FROM capture_requests WHERE requestId=?")
+      .get(submission.requestId),
+  ).toEqual({ state: "deleted" });
+  const second = join(f.root, "deleted-again.task-workspace.json");
+  await f.call("exportBackup", { destination: second });
+  await expect(
+    f.call("previewRestore", { path: second }),
+  ).resolves.toBeTruthy();
+  expect(f.count("tasks")).toBe(0);
 });

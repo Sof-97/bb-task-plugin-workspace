@@ -16,6 +16,7 @@ export const CAPTURE_DESCRIPTION_LIMIT = 64 * 1024;
 export type CaptureErrorCode =
   | "VALIDATION_ERROR"
   | "PAYLOAD_TOO_LARGE"
+  | "TASK_DELETED"
   | "REQUEST_ID_CONFLICT"
   | "DATASET_CHANGED"
   | "PROJECT_NOT_ENROLLED"
@@ -399,6 +400,7 @@ export function captureErrorStatus(
       return 400;
     case "PAYLOAD_TOO_LARGE":
       return 413;
+    case "TASK_DELETED":
     case "REQUEST_ID_CONFLICT":
     case "DATASET_CHANGED":
     case "PROJECT_NOT_ENROLLED":
