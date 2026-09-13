@@ -467,6 +467,7 @@ async function fixture(startFailure?: { point: StartFailurePoint | null }) {
   return {
     root,
     harness,
+    threads,
     call,
     enrolled,
     setPresent: (v: boolean) => (present = v),
@@ -3386,4 +3387,127 @@ test("explicit enrollment reassociation preserves task identities and prefix", a
     repository: "/fixture-2",
     environmentId: "env-second",
   });
+});
+
+test("delete task keeps BB threads, removes relationships, rejects stale requests and never reuses numbers", async () => {
+  const f = await fixture();
+  f.addThread("thread-one");
+  f.addThread("thread-two");
+  const a = task.parse(
+    await f.call("create", { enrollmentId: f.enrolled.id, title: "Delete me" }),
+  );
+  const b = task.parse(
+    await f.call("create", { enrollmentId: f.enrolled.id, title: "Keep me" }),
+  );
+  const { datasetEpoch } = (await f.call("list", null)) as {
+    datasetEpoch: string;
+  };
+  for (const threadId of ["thread-one", "thread-two"])
+    await f.call("linkThread", {
+      id: a.id,
+      datasetEpoch,
+      threadId,
+      expectedCurrentLinkRevision: null,
+      reassign: false,
+    });
+  f.db
+    .prepare(
+      "INSERT INTO task_relationships(taskId,targetTaskId,kind) VALUES(?,?,'depends-on')",
+    )
+    .run(b.id, a.id);
+  const current = ((await f.call("list", null)) as { tasks: unknown[] }).tasks
+    .map((t) => task.parse(t))
+    .find((t) => t.id === a.id)!;
+  const input = { id: a.id, datasetEpoch, expectedRevision: current.revision };
+  await expect(
+    f.call("deleteTask", { ...input, datasetEpoch: randomUUID() }),
+  ).rejects.toThrow(/dataset/i);
+  await expect(
+    f.call("deleteTask", { ...input, expectedRevision: current.revision + 1 }),
+  ).rejects.toThrow(/changed/i);
+  const callsBefore = f.harness.inspection.sdk.calls.length;
+  await f.call("deleteTask", input);
+  expect(
+    f.harness.inspection.sdk.calls
+      .slice(callsBefore)
+      .filter((c) => c.path.startsWith("threads.")),
+  ).toEqual([]);
+  expect(f.threads.has("thread-one")).toBe(true);
+  expect(f.threads.has("thread-two")).toBe(true);
+  for (const name of [
+    "tasks",
+    "thread_links",
+    "thread_start_operations",
+    "pending_operations",
+    "memory_operations",
+    "memory_operation_ids",
+    "repository_workspaces",
+  ]) {
+    const column = name === "tasks" ? "id" : "taskId";
+    expect(
+      f.db
+        .prepare(`SELECT count(*) AS n FROM ${name} WHERE ${column}=?`)
+        .get(a.id),
+    ).toEqual({ n: 0 });
+  }
+  expect(f.db.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
+  const remaining = (
+    (await f.call("list", null)) as { tasks: unknown[] }
+  ).tasks.map((t) => task.parse(t));
+  expect(remaining).toHaveLength(1);
+  expect(remaining[0]).toMatchObject({
+    id: b.id,
+    revision: b.revision + 1,
+    dependencyIds: [],
+  });
+  await f.call("linkThread", {
+    id: b.id,
+    datasetEpoch,
+    threadId: "thread-one",
+    expectedCurrentLinkRevision: null,
+    reassign: false,
+  });
+  const c = task.parse(
+    await f.call("create", { enrollmentId: f.enrolled.id, title: "New task" }),
+  );
+  expect(c.number).toBe(3);
+});
+
+test("delete refuses an in-flight thread start and preserves its eventual thread", async () => {
+  const f = await fixture();
+  const created = task.parse(
+    await f.call("create", { enrollmentId: f.enrolled.id, title: "Starting" }),
+  );
+  const input = await startSubmission(f, created);
+  f.delaySpawns();
+  const starting = f.call("startLinkedThread", input);
+  await expect.poll(() => f.spawnCount()).toBe(1);
+  try {
+    await expect(
+      f.call("deleteTask", {
+        id: created.id,
+        datasetEpoch: input.datasetEpoch,
+        expectedRevision: created.revision,
+      }),
+    ).rejects.toThrow(/pending thread start/i);
+  } finally {
+    f.releaseSpawns();
+  }
+  await starting;
+  expect(f.threads.has("thread-spawn-1")).toBe(true);
+  const current = ((await f.call("list", null)) as { tasks: unknown[] }).tasks
+    .map((t) => task.parse(t))
+    .find((t) => t.id === created.id)!;
+  await f.call("deleteTask", {
+    id: current.id,
+    datasetEpoch: input.datasetEpoch,
+    expectedRevision: current.revision,
+  });
+  expect(f.threads.has("thread-spawn-1")).toBe(true);
+  const unlinked = await f.harness.behavior.callAgentTool(
+    "task_workspace_read_current_task",
+    {},
+    { threadId: "thread-spawn-1", projectId: "project-1" },
+  );
+  expect(toolJson(unlinked).message).toContain("not-linked");
 });

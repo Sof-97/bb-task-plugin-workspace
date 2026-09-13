@@ -2263,3 +2263,80 @@ test("memory conflicts expose only recovery actions supported by the observed by
     unsafe.lifecycle.unmount();
   }
 });
+
+test("task deletion requires confirmation, preserves errors and returns to board on success", async () => {
+  const app = await loadPluginApp(() => import("./app"));
+  const active = uiTask();
+  const epoch = randomUUID();
+  let deleted = false,
+    reject = true,
+    calls = 0;
+  const slot = renderSlot(
+    app.navPanels[0]!,
+    { subPath: active.id },
+    {
+      rpc: {
+        list: () => ({
+          datasetEpoch: epoch,
+          tasks: deleted ? [] : [active],
+          enrollments: [],
+          candidates: [],
+          discoveryError: null,
+        }),
+        deleteTask: (input: unknown) => {
+          calls++;
+          expect(input).toEqual({
+            id: active.id,
+            datasetEpoch: epoch,
+            expectedRevision: active.revision,
+          });
+          if (reject) throw new Error("Task changed; reload before deleting.");
+          deleted = true;
+          return { id: active.id };
+        },
+      },
+    },
+  );
+  try {
+    fireEvent.click(await slot.findByRole("button", { name: "Delete task" }));
+    const dialog = await slot.findByRole("dialog", {
+      name: `Delete ${active.displayId}?`,
+    });
+    expect(dialog.textContent).toContain("Linked BB threads are kept");
+    expect(calls).toBe(0);
+    fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    expect(calls).toBe(0);
+    fireEvent.click(slot.getByRole("button", { name: "Delete task" }));
+    fireEvent.click(
+      await slot.findByRole("button", { name: "Delete task and keep threads" }),
+    );
+    await waitFor(() =>
+      expect(
+        slot
+          .getAllByRole("alert")
+          .some((el) => el.textContent?.includes("Task changed")),
+      ).toBe(true),
+    );
+    expect(deleted).toBe(false);
+    reject = false;
+    await waitFor(() =>
+      expect(
+        slot
+          .getByRole("button", { name: "Delete task and keep threads" })
+          .hasAttribute("disabled"),
+      ).toBe(false),
+    );
+    fireEvent.click(
+      slot.getByRole("button", { name: "Delete task and keep threads" }),
+    );
+    await waitFor(() =>
+      expect(slot.inspection.navigateCalls).toContainEqual({
+        method: "toPluginPanel",
+        path: "board",
+      }),
+    );
+    expect(deleted).toBe(true);
+  } finally {
+    slot.lifecycle.unmount();
+  }
+});

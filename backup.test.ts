@@ -22,7 +22,7 @@ import { enrollment, task } from "./contract";
 
 const ARCHIVE_SUFFIX = ".task-workspace.json";
 const ARCHIVE_SCHEMA_VERSION_SEED = 10;
-const ARCHIVE_SCHEMA_VERSION_LIVE = 11;
+const ARCHIVE_SCHEMA_VERSION_LIVE = 12;
 const SEED_EXTENSIONS = { adapter: "seed/v1" };
 
 const cleanups: Array<() => Promise<unknown>> = [];
@@ -453,7 +453,7 @@ test("old-schema datasets are rejected by the complete adapter with a clear erro
     )
     .run();
   await expect(f.call("retryDailyBackup", null)).rejects.toThrow(
-    /schema 10 has no complete archive adapter/,
+    /schema 11 has no complete archive adapter/,
   );
   const health = (await f.call("list", null)) as {
     backup: { state: string; error: string | null };
@@ -775,11 +775,14 @@ test("pre-migration seam publishes a verified protective archive at the old sche
     },
   });
   cleanups.push(() => worker.experimental_dispose());
-  const { bb } = await createFakePluginHost({
+  let registrationFinished = false;
+  const { bb, harness } = await createFakePluginHost({
     pluginId: "task-workspace",
     dataDir: join(root, "plugin"),
     experimental_hostEntry: true,
     experimental_callHostRpc: async ({ method, input }) => {
+      if (!registrationFinished)
+        throw new Error("Host calls are unavailable during registration");
       if (method === "validateRepository" || method === "inspectRepository")
         return {
           repository: (input as { repository: string }).repository,
@@ -808,6 +811,9 @@ test("pre-migration seam publishes a verified protective archive at the old sche
     INSERT INTO tasks (id, enrollmentId, number, displayId, title, description, status, revision, createdAt, updatedAt, attribution, memoryState, memoryHash, memoryRevision)
       VALUES ('${taskId}', (SELECT id FROM enrollments), 1, 'OLD-1', 'Old task', '', 'Inbox', 1, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z', 'legacy', 'healthy', '${memoryHash}', 1);
   `);
+  db.exec(`INSERT INTO repository_workspaces(taskId,projectId,hostId,repository,updatedAt)
+    SELECT tasks.id,enrollments.projectId,enrollments.hostId,enrollments.repository,tasks.updatedAt
+    FROM tasks JOIN enrollments ON tasks.enrollmentId=enrollments.id`);
   const stmts = db.prepare(
     "INSERT INTO _bb_migrations (id, applied_at) VALUES (?, ?)",
   );
@@ -818,13 +824,24 @@ test("pre-migration seam publishes a verified protective archive at the old sche
   await plugin(bb, {
     onDailyAttempt: (attempt) => dailyAttempts.push(attempt),
   });
+  expect(
+    (
+      db.prepare("SELECT COUNT(*) AS count FROM _bb_migrations").get() as {
+        count: number;
+      }
+    ).count,
+  ).toBe(9);
+  registrationFinished = true;
+  await harness.behavior.callRpc("exportBackup", {
+    destination: join(root, "after-migration.task-workspace.json"),
+  });
   // The migration completed only after the protective archive was published.
   const ledger = (
     db.prepare("SELECT COUNT(*) AS count FROM _bb_migrations").get() as {
       count: number;
     }
   ).count;
-  expect(ledger).toBe(11);
+  expect(ledger).toBe(12);
   const recoveryDir = join(
     root,
     "host",
@@ -868,7 +885,7 @@ test("pre-migration seam refuses to migrate when the protective capture fails", 
     },
   });
   cleanups.push(() => worker.experimental_dispose());
-  const { bb } = await createFakePluginHost({
+  const { bb, harness } = await createFakePluginHost({
     pluginId: "task-workspace",
     dataDir: join(root, "plugin"),
     experimental_hostEntry: true,
@@ -903,7 +920,7 @@ test("pre-migration seam refuses to migrate when the protective capture fails", 
   await expect(
     plugin(bb, {
       onDailyAttempt: (attempt) => dailyAttempts.push(attempt),
-    }),
+    }).then(() => harness.behavior.callRpc("list", null)),
   ).rejects.toThrow(/Refusing to apply pending migrations/);
   expect(
     (
@@ -1054,7 +1071,7 @@ test("startup refuses a database with records but no migration ledger", async ()
     },
   });
   cleanups.push(() => worker.experimental_dispose());
-  const { bb } = await createFakePluginHost({
+  const { bb, harness } = await createFakePluginHost({
     pluginId: "task-workspace",
     dataDir: join(root, "plugin"),
     experimental_hostEntry: true,
@@ -1093,7 +1110,7 @@ test("startup refuses when the dataset identity is unreadable in an existing sch
     },
   });
   cleanups.push(() => worker.experimental_dispose());
-  const { bb } = await createFakePluginHost({
+  const { bb, harness } = await createFakePluginHost({
     pluginId: "task-workspace",
     dataDir: join(root, "plugin"),
     experimental_hostEntry: true,
@@ -1111,9 +1128,9 @@ test("startup refuses when the dataset identity is unreadable in an existing sch
   );
   for (let i = 0; i < 9; i += 1) stmts.run(i, 1);
   db.exec("DROP TABLE dataset");
-  await expect(plugin(bb)).rejects.toThrow(
-    /dataset identity could not be read|no dataset identity/,
-  );
+  await expect(
+    plugin(bb).then(() => harness.behavior.callRpc("list", null)),
+  ).rejects.toThrow(/dataset identity could not be read|no dataset identity/);
   expect(
     (
       db.prepare("SELECT COUNT(*) AS count FROM _bb_migrations").get() as {
@@ -1138,7 +1155,7 @@ test("protective pre-migration capture refuses when memory changes during the ca
   let held = false;
   const gate = { release: null as (() => void) | null };
   const hold = new Promise<void>((resolve) => (gate.release = resolve));
-  const { bb } = await createFakePluginHost({
+  const { bb, harness } = await createFakePluginHost({
     pluginId: "task-workspace",
     dataDir: join(root, "plugin"),
     experimental_hostEntry: true,
@@ -1180,10 +1197,12 @@ test("protective pre-migration capture refuses when memory changes during the ca
   await mkdir(memoryDir, { recursive: true });
   await writeFile(join(memoryDir, `${taskId}.md`), memoryText);
   held = true;
-  const startup = plugin(bb).then(
-    () => "migrated",
-    (error: unknown) => String(error),
-  );
+  const startup = plugin(bb)
+    .then(() => harness.behavior.callRpc("list", null))
+    .then(
+      () => "migrated",
+      (error: unknown) => String(error),
+    );
   await new Promise((resolve) => setTimeout(resolve, 20));
   // External change while the protective capture is suspended on a read.
   await writeFile(
@@ -1206,7 +1225,9 @@ test("a mismatched digest stamp in the filename is not daily provenance", async 
   const f = await fixture();
   await enrollAndCreate(f, "Stamp mismatch");
   const { datasetId, daily } = await f.dirs();
-  await f.call("retryDailyBackup", null);
+  const baseline = (await f.call("retryDailyBackup", null)) as {
+    dailyArchiveCount: number;
+  };
   const hostRow = f.db
     .prepare("SELECT hostId FROM enrollments LIMIT 1")
     .get() as { hostId: string };
@@ -1221,7 +1242,7 @@ test("a mismatched digest stamp in the filename is not daily provenance", async 
       lastSuccessfulLocalDay: string | null;
     };
   };
-  expect(health.backup.dailyArchiveCount).toBe(1);
+  expect(health.backup.dailyArchiveCount).toBe(baseline.dailyArchiveCount);
   expect(health.backup.lastSuccessfulLocalDay).toBeTruthy();
   // A tampered stamp file is neither counted nor pruned.
   expect((await readdir(daily)).some((n) => n.includes("deadbeefcafe"))).toBe(

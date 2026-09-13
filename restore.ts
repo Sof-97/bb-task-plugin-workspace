@@ -562,7 +562,10 @@ function validateCaptureRequests(
     );
     if (!HASH.test(payloadHash))
       fail("INVALID_RELATIONSHIP", "Capture payload hash is invalid.");
-    if (!taskIds.has(str(row.taskId, `capture_requests[${index}].taskId`)))
+    if (
+      row.state !== "deleted" &&
+      !taskIds.has(str(row.taskId, `capture_requests[${index}].taskId`))
+    )
       fail(
         "INVALID_RELATIONSHIP",
         "A capture request references an unknown task.",
@@ -577,12 +580,23 @@ function validateCaptureRequests(
         "Capture request project identity is invalid.",
       );
     const state = str(row.state, `capture_requests[${index}].state`);
+    if (
+      state === "deleted" &&
+      (!UUID.test(str(row.taskId, "Deleted capture task identity")) ||
+        taskIds.has(row.taskId as string) ||
+        row.receiptJson !== null)
+    )
+      fail(
+        "INVALID_RELATIONSHIP",
+        "Deleted capture request must reference a removed task and have no receipt.",
+      );
     // `recovery-required` is a live state the restore switch itself writes to
     // quarantine a pending request; a later backup must stay restorable.
     if (
       state !== "allocated" &&
       state !== "accepted" &&
-      state !== "recovery-required"
+      state !== "recovery-required" &&
+      state !== "deleted"
     )
       fail("INVALID_RECORD", "Capture request state is unsupported.");
     if (state === "accepted") {
@@ -726,6 +740,7 @@ function validateMemory(
 
 function validateSequenceContinuity(
   enrollments: ArchiveTable,
+  allowDeletedNumbers: boolean,
   tasks: {
     numbers: Map<string, Set<number>>;
     maxNumber: Map<string, number>;
@@ -737,7 +752,7 @@ function validateSequenceContinuity(
     const nextNumber = int(row.nextNumber, "enrollment nextNumber");
     const seen = tasks.numbers.get(id) ?? new Set<number>();
     const highest = tasks.maxNumber.get(id) ?? 0;
-    for (let n = 1; n < nextNumber; n += 1)
+    for (let n = 1; !allowDeletedNumbers && n < nextNumber; n += 1)
       if (!seen.has(n))
         fail(
           "INVALID_RELATIONSHIP",
@@ -761,10 +776,15 @@ export function planStagedRestore(
   const ledgerTable = ledger!;
   validateLedgerRows(ledgerTable);
   const schemaVersion = ledgerTable.rows.length;
-  if (schemaVersion !== 9 && schemaVersion !== 10 && schemaVersion !== 11)
+  if (
+    schemaVersion !== 9 &&
+    schemaVersion !== 10 &&
+    schemaVersion !== 11 &&
+    schemaVersion !== 12
+  )
     fail(
       "UNSUPPORTED_SCHEMA",
-      `Archive schema ${schemaVersion} has no restore adapter (supported: 9, 10, 11).`,
+      `Archive schema ${schemaVersion} has no restore adapter (supported: 9, 10, 11, 12).`,
     );
   const manifestVersion = options.manifest.schemaVersion;
   if (manifestVersion !== schemaVersion)
@@ -815,7 +835,11 @@ export function planStagedRestore(
       "PENDING_OPERATIONS",
       "The archive carries a prepared memory operation; complete archives only record settled memory state.",
     );
-  validateSequenceContinuity(table(tables, "enrollments")!, tasks);
+  validateSequenceContinuity(
+    table(tables, "enrollments")!,
+    schemaVersion >= 12,
+    tasks,
+  );
   return {
     schemaVersion,
     source: identity,
@@ -1026,7 +1050,7 @@ export const RESTORE_CAPTURE_QUARANTINE = `UPDATE capture_requests
    SET state='recovery-required',
        error='Restored from an archive before its creation receipt was accepted. Nothing is replayed or resubmitted automatically; a deliberate explicit retry with the original request identity may reconcile it against the restored task.',
        updatedAt=strftime('%Y-%m-%dT%H:%M:%fZ','now')
-   WHERE state<>'accepted'`;
+   WHERE state NOT IN ('accepted','deleted')`;
 
 export type StagedDatabaseHelpers = {
   rows: typeof rows;
