@@ -1,0 +1,38 @@
+# Dependencies and generated bundles
+node_modules/
+dist/
+coverage/
+*.tsbuildinfo
+*.tgz
+
+# Local planning, runtime evidence and verification output
+/.local-dev/
+/.scratch/
+/evidence/
+*.log
+.cache/
+
+# Credentials and local configuration
+.env
+.env.*
+!.env.example
+!.env.*.example
+
+# Plugin runtime state and SQLite sidecars
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+*.sqlite3
+*.sqlite3-shm
+*.sqlite3-wal
+
+# OS and editor state
+.DS_Store
+._*
+.idea/
+*.swp
+*.swo
+*~
