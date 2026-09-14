@@ -127,6 +127,9 @@ function Board({ subPath }: PluginNavPanelProps) {
   const [filterProject, setFilterProject] = useState("all");
   const [query, setQuery] = useState("");
   const [showCompleted, setShowCompleted] = useState(false);
+  const [workspaceView, setWorkspaceView] = useState<"list" | "board">("list");
+  const [activeStage, setActiveStage] = useState<Task["status"]>("Inbox");
+  const [previewTaskId, setPreviewTaskId] = useState("");
   const [editingTitle, setEditingTitle] = useState(false);
   const [editingDescription, setEditingDescription] = useState(false);
   const [editTitle, setEditTitle] = useState("");
@@ -775,6 +778,51 @@ function Board({ subPath }: PluginNavPanelProps) {
   const stageList = showCompleted
     ? normalStatuses
     : normalStatuses.filter((stage) => stage !== "Completed");
+  const boardStages: Task["status"][] = [...stageList, "Blocked"];
+  const queueTasks = visible.filter((task) => task.status === activeStage);
+  const previewTask =
+    queueTasks.find((task) => task.id === previewTaskId) ?? queueTasks[0];
+  const formatActivityDate = (value: string) =>
+    new Date(value).toLocaleDateString(undefined, {
+      month: "short",
+      day: "numeric",
+    });
+  const filters = (
+    <div className="grid min-w-0 grid-cols-[minmax(10rem,1fr)_minmax(9rem,12rem)_auto] items-center gap-2">
+      <Input
+        aria-label="Search tasks"
+        placeholder="Search this queue…"
+        className="min-w-0"
+        value={query}
+        onChange={(event) => setQuery(event.target.value)}
+      />
+      <select
+        aria-label="Project filter"
+        className="h-9 min-w-0 rounded-lg border border-input bg-background px-3 text-sm"
+        value={filterProject}
+        onChange={(event) => setFilterProject(event.target.value)}
+      >
+        <option value="all">All projects</option>
+        {data?.enrollments.map((item) => (
+          <option key={item.id} value={item.id}>
+            {item.name}
+          </option>
+        ))}
+      </select>
+      <label className="flex min-h-9 cursor-pointer items-center gap-2 whitespace-nowrap px-2 text-xs text-muted-foreground">
+        <input
+          type="checkbox"
+          checked={showCompleted}
+          onChange={(event) => {
+            setShowCompleted(event.target.checked);
+            if (!event.target.checked && activeStage === "Completed")
+              setActiveStage("In progress");
+          }}
+        />
+        Show Completed
+      </label>
+    </div>
+  );
   const relationshipOption = (
     task: Task,
     values: string[],
@@ -799,11 +847,29 @@ function Board({ subPath }: PluginNavPanelProps) {
     <div
       ref={board}
       tabIndex={-1}
-      className="relative h-full overflow-auto p-4 text-foreground outline-none"
+      className="relative flex h-full min-h-0 flex-col overflow-hidden p-4 text-foreground outline-none"
     >
-      <header className="mb-4 flex flex-wrap items-center justify-between gap-3">
-        <h1 className="text-xl font-semibold">Task workspace</h1>
-        <div className="flex flex-wrap gap-2">
+      <header className="mb-3 flex min-h-9 flex-wrap items-center justify-between gap-3">
+        <p className="text-xs italic text-muted-foreground">
+          “Fare schifo ogni giorno meno.”
+        </p>
+        <div className="flex flex-wrap items-center gap-2">
+          <div
+            className="flex rounded-lg border border-border bg-background p-0.5"
+            aria-label="Workspace view"
+          >
+            {(["list", "board"] as const).map((view) => (
+              <button
+                key={view}
+                type="button"
+                aria-pressed={workspaceView === view}
+                className={`rounded-md px-3 py-1.5 text-xs capitalize ${workspaceView === view ? "bg-secondary font-medium text-foreground" : "text-muted-foreground"}`}
+                onClick={() => setWorkspaceView(view)}
+              >
+                {view}
+              </button>
+            ))}
+          </div>
           <Dialog open={enrollOpen} onOpenChange={setEnrollOpen}>
             <DialogTrigger asChild>
               <Button type="button" variant="outline" disabled={!data}>
@@ -965,102 +1031,270 @@ function Board({ subPath }: PluginNavPanelProps) {
         </p>
       )}
       {data?.discoveryError && <p role="alert">{data.discoveryError}</p>}
-      <div
-        className="mb-4 flex flex-wrap items-center gap-2"
-        aria-label="Board filters"
-      >
-        <select
-          aria-label="Project filter"
-          className="h-9 min-w-0 max-w-full rounded-md border border-input bg-background px-3 text-sm sm:max-w-64"
-          value={filterProject}
-          onChange={(event) => setFilterProject(event.target.value)}
-        >
-          <option value="all">All projects</option>
-          {data?.enrollments.map((item) => (
-            <option key={item.id} value={item.id}>
-              {item.name}
-            </option>
-          ))}
-        </select>
-        <Input
-          aria-label="Search tasks"
-          placeholder="Search tasks…"
-          className="min-w-40 flex-1 sm:max-w-sm"
-          value={query}
-          onChange={(event) => setQuery(event.target.value)}
-        />
-        <label className="flex min-h-9 cursor-pointer items-center gap-2 whitespace-nowrap px-2 text-sm text-muted-foreground sm:ml-auto">
-          <input
-            type="checkbox"
-            checked={showCompleted}
-            onChange={(event) => setShowCompleted(event.target.checked)}
-          />
-          Show Completed
-        </label>
-      </div>
       {!data && <p role="status">Loading tasks…</p>}
-      <div className="flex gap-3 overflow-x-auto pb-4" aria-label="Task board">
-        {stageList.map((stage) => (
-          <section
-            key={stage}
-            className="min-h-64 w-64 shrink-0 rounded border border-border bg-card p-3"
+      {data && !taskId && workspaceView === "list" && (
+        <div
+          className="grid min-h-0 flex-1 grid-cols-[minmax(11rem,13rem)_minmax(20rem,1fr)_minmax(17rem,19rem)] overflow-hidden rounded-xl border border-border"
+          aria-label="Task workspace list"
+        >
+          <nav
+            className="overflow-y-auto border-r border-border bg-card p-2"
+            aria-label="Workflow stages"
           >
-            <h2 className="mb-3 font-semibold">{stage}</h2>
-            {visible
-              .filter((task) => task.status === stage)
-              .map((task) => (
+            <p className="px-2 pb-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+              Workflow
+            </p>
+            {normalStatuses
+              .filter((stage) => showCompleted || stage !== "Completed")
+              .map((stage) => (
                 <button
-                  key={task.id}
-                  className="mb-2 block w-full rounded border border-border p-3 text-left"
-                  onClick={() =>
-                    navigate.toPluginPanel("board", { subPath: task.id })
-                  }
+                  key={stage}
+                  type="button"
+                  aria-pressed={activeStage === stage}
+                  className={`mb-1 flex w-full items-center justify-between rounded-lg px-2.5 py-2 text-left text-sm ${activeStage === stage ? "bg-secondary font-medium" : "text-muted-foreground hover:bg-state-hover"}`}
+                  onClick={() => setActiveStage(stage)}
                 >
-                  <small>
-                    {task.displayId} · {enrollmentNames.get(task.enrollmentId)}
-                  </small>
-                  <p>{task.title}</p>
-                  {task.dependencyCycle && (
-                    <p className="text-destructive">Dependency cycle</p>
-                  )}
-                  {task.memoryState !== "healthy" && (
-                    <p className="text-destructive">Memory needs recovery</p>
-                  )}
+                  <span>{stage}</span>
+                  <span className="text-xs">
+                    {visible.filter((task) => task.status === stage).length}
+                  </span>
                 </button>
               ))}
-          </section>
-        ))}
-      </div>
-      <section
-        className="border-t border-border pt-3"
-        aria-label="Blocked tasks"
-      >
-        <h2 className="font-semibold">Blocked</h2>
-        <div className="mt-2 flex flex-wrap gap-2">
-          {visible
-            .filter((task) => task.status === "Blocked")
-            .map((task) => (
-              <button
-                key={task.id}
-                className="w-64 rounded border border-border p-3 text-left"
-                onClick={() =>
-                  navigate.toPluginPanel("board", { subPath: task.id })
-                }
-              >
-                <small>{task.displayId}</small>
-                <p>{task.title}</p>
-                <p className="text-sm">{task.blockerReason}</p>
-              </button>
-            ))}
-          {!visible.some((task) => task.status === "Blocked") && (
-            <p className="text-sm text-muted-foreground">
-              No matching blocked tasks.
-            </p>
-          )}
+            <div className="my-2 border-t border-border" />
+            <button
+              type="button"
+              aria-pressed={activeStage === "Blocked"}
+              className={`flex w-full items-center justify-between rounded-lg px-2.5 py-2 text-left text-sm ${activeStage === "Blocked" ? "bg-secondary font-medium" : "text-muted-foreground hover:bg-state-hover"}`}
+              onClick={() => setActiveStage("Blocked")}
+            >
+              <span>Blocked</span>
+              <span className="text-xs">
+                {visible.filter((task) => task.status === "Blocked").length}
+              </span>
+            </button>
+          </nav>
+          <main
+            className="min-h-0 overflow-y-auto"
+            aria-label={`${activeStage} queue`}
+          >
+            <header className="sticky top-0 z-10 border-b border-border bg-background px-4 py-3">
+              <div className="mb-3 flex items-center justify-between gap-3">
+                <div>
+                  <h1 className="font-semibold">{activeStage}</h1>
+                  <p className="text-xs text-muted-foreground">
+                    {queueTasks.length}{" "}
+                    {queueTasks.length === 1 ? "task" : "tasks"} across projects
+                  </p>
+                </div>
+                {(query || filterProject !== "all") && (
+                  <button
+                    type="button"
+                    className="text-xs text-muted-foreground hover:text-foreground"
+                    onClick={() => {
+                      setQuery("");
+                      setFilterProject("all");
+                    }}
+                  >
+                    Clear filters
+                  </button>
+                )}
+              </div>
+              {filters}
+            </header>
+            <div className="divide-y divide-border">
+              {queueTasks.map((task) => (
+                <button
+                  key={task.id}
+                  type="button"
+                  aria-label={`${task.displayId}: ${task.title}`}
+                  className={`grid w-full grid-cols-[minmax(0,1fr)_7rem] gap-3 px-4 py-3 text-left ${previewTask?.id === task.id ? "bg-secondary/70" : "hover:bg-state-hover"}`}
+                  onClick={() => setPreviewTaskId(task.id)}
+                >
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                      <span>{task.displayId}</span>
+                      <span>·</span>
+                      <span>{enrollmentNames.get(task.enrollmentId)}</span>
+                    </div>
+                    <p className="mt-1 truncate text-sm">{task.title}</p>
+                    {(task.dependencyCycle ||
+                      task.memoryState !== "healthy") && (
+                      <p className="mt-1 text-xs text-destructive">
+                        {task.dependencyCycle && "Dependency cycle"}
+                        {task.dependencyCycle &&
+                          task.memoryState !== "healthy" &&
+                          " · "}
+                        {task.memoryState !== "healthy" &&
+                          "Memory needs recovery"}
+                      </p>
+                    )}
+                  </div>
+                  <div className="text-right text-xs text-muted-foreground">
+                    <p>
+                      {task.linkedThreads.length}{" "}
+                      {task.linkedThreads.length === 1 ? "thread" : "threads"}
+                    </p>
+                    <p className="mt-1">{formatActivityDate(task.updatedAt)}</p>
+                  </div>
+                </button>
+              ))}
+              {queueTasks.length === 0 && (
+                <p className="px-4 py-12 text-center text-sm text-muted-foreground">
+                  No tasks match this queue and its filters.
+                </p>
+              )}
+            </div>
+          </main>
+          <aside
+            className="min-h-0 overflow-y-auto border-l border-border bg-card p-4"
+            aria-label="Selected task preview"
+          >
+            {previewTask ? (
+              <>
+                <p className="text-xs font-medium text-muted-foreground">
+                  {previewTask.displayId} ·{" "}
+                  {enrollmentNames.get(previewTask.enrollmentId)}
+                </p>
+                <h2 className="mt-2 font-semibold leading-snug">
+                  {previewTask.title}
+                </h2>
+                {previewTask.description && (
+                  <p className="mt-3 line-clamp-3 text-sm leading-relaxed text-muted-foreground">
+                    {previewTask.description}
+                  </p>
+                )}
+                <dl className="mt-4 grid grid-cols-2 gap-3 border-t border-border pt-4 text-xs">
+                  <div>
+                    <dt className="text-muted-foreground">Status</dt>
+                    <dd className="mt-0.5">{previewTask.status}</dd>
+                  </div>
+                  <div>
+                    <dt className="text-muted-foreground">Last changed</dt>
+                    <dd className="mt-0.5">
+                      {formatActivityDate(previewTask.updatedAt)}
+                    </dd>
+                  </div>
+                </dl>
+                <section className="mt-5 border-t border-border pt-4">
+                  <div className="mb-2 flex items-center justify-between">
+                    <h3 className="text-sm font-semibold">Connected threads</h3>
+                    <span className="text-xs text-muted-foreground">
+                      {previewTask.linkedThreads.length}
+                    </span>
+                  </div>
+                  <div className="space-y-2">
+                    {previewTask.linkedThreads.map((link) => (
+                      <button
+                        key={link.threadId}
+                        type="button"
+                        className="w-full rounded-lg border border-border bg-background p-2.5 text-left hover:bg-state-hover"
+                        onClick={() => navigate.toThread(link.threadId)}
+                      >
+                        <div className="flex items-center justify-between gap-2 text-[11px] text-muted-foreground">
+                          <span className="flex min-w-0 items-center gap-1.5">
+                            <span
+                              className={`size-1.5 shrink-0 rounded-full ${link.runtimeStatus === "active" ? "bg-emerald-500" : "bg-muted-foreground/40"}`}
+                            />
+                            <span className="truncate">
+                              {link.runtimeStatus ?? link.availability}
+                            </span>
+                          </span>
+                          <span className="shrink-0">
+                            {formatActivityDate(link.linkedAt)}
+                          </span>
+                        </div>
+                        <p className="mt-1.5 line-clamp-2 text-xs leading-snug">
+                          {link.lastKnownTitle ?? link.threadId}
+                        </p>
+                      </button>
+                    ))}
+                    {previewTask.linkedThreads.length === 0 && (
+                      <p className="rounded-lg border border-dashed border-border p-3 text-xs text-muted-foreground">
+                        No connected threads yet.
+                      </p>
+                    )}
+                  </div>
+                </section>
+                <Button
+                  className="mt-4 w-full"
+                  onClick={() =>
+                    navigate.toPluginPanel("board", {
+                      subPath: previewTask.id,
+                    })
+                  }
+                >
+                  Open task details
+                </Button>
+              </>
+            ) : (
+              <p className="text-sm text-muted-foreground">
+                Select a stage with tasks to inspect one here.
+              </p>
+            )}
+          </aside>
         </div>
-      </section>
+      )}
+      {data && !taskId && workspaceView === "board" && (
+        <section
+          className="flex min-h-0 flex-1 flex-col"
+          aria-label="Task board"
+        >
+          <header className="mb-3 rounded-xl border border-border bg-card p-3">
+            {filters}
+          </header>
+          <div className="min-h-0 flex-1 overflow-x-auto pb-2">
+            <div className="flex h-full min-h-[28rem] gap-3">
+              {boardStages.map((stage) => {
+                const tasks = visible.filter((task) => task.status === stage);
+                return (
+                  <section
+                    key={stage}
+                    className="flex h-full w-72 shrink-0 flex-col overflow-hidden rounded-xl border border-border bg-card"
+                  >
+                    <header className="flex items-center justify-between border-b border-border px-3 py-2.5">
+                      <h2 className="truncate text-sm font-semibold">
+                        {stage}
+                      </h2>
+                      <span className="rounded-full bg-secondary px-2 py-0.5 text-xs text-muted-foreground">
+                        {tasks.length}
+                      </span>
+                    </header>
+                    <div className="min-h-0 flex-1 space-y-2 overflow-y-auto p-2">
+                      {tasks.map((task) => (
+                        <button
+                          key={task.id}
+                          type="button"
+                          className="block w-full rounded-lg border border-border bg-background p-3 text-left"
+                          onClick={() =>
+                            navigate.toPluginPanel("board", {
+                              subPath: task.id,
+                            })
+                          }
+                        >
+                          <div className="flex justify-between gap-2 text-[11px] text-muted-foreground">
+                            <span className="font-medium text-foreground">
+                              {task.displayId}
+                            </span>
+                            <span>{task.linkedThreads.length} threads</span>
+                          </div>
+                          <p className="mt-1.5 text-sm leading-snug">
+                            {task.title}
+                          </p>
+                          <p className="mt-2 text-[11px] text-muted-foreground">
+                            {enrollmentNames.get(task.enrollmentId)}
+                          </p>
+                        </button>
+                      ))}
+                    </div>
+                  </section>
+                );
+              })}
+            </div>
+          </div>
+        </section>
+      )}
       {data && (
-        <footer className="mt-6 flex justify-end border-t border-border pt-3">
+        <footer className="mt-3 flex shrink-0 justify-end border-t border-border pt-3">
           <Dialog open={backupToolsOpen} onOpenChange={setBackupToolsOpen}>
             <DialogTrigger asChild>
               <Button type="button" variant="outline">
