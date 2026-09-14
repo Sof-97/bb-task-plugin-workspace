@@ -347,7 +347,7 @@ export function WayfinderPanel({
 
   return (
     <section
-      className="mt-6 grid gap-3 rounded border border-border p-3"
+      className="mt-6 grid gap-3 rounded-xl border border-border p-3"
       aria-label="Wayfinder"
     >
       <h3 className="font-semibold">Local Wayfinder</h3>
@@ -369,7 +369,7 @@ export function WayfinderPanel({
           {inspection?.candidates.length ? (
             <select
               aria-label="Wayfinder tickets directory"
-              className="block w-full rounded border border-border bg-background p-2"
+              className="block w-full rounded-lg border border-border bg-background p-2"
               value={selectedDirectory}
               onChange={(event) => editSelectedDirectory(event.target.value)}
             >
@@ -421,7 +421,10 @@ export function WayfinderPanel({
         )}
       </div>
       {draftConflict && (
-        <div role="alert" className="rounded border border-border p-2 text-sm">
+        <div
+          role="alert"
+          className="rounded-xl border border-border p-2 text-sm"
+        >
           <p>
             The saved Wayfinder attachment changed while this draft was open.
             Reread it or explicitly rebase this draft before saving.
@@ -445,7 +448,10 @@ export function WayfinderPanel({
         </div>
       )}
       {inspection && (
-        <div role="status" className="rounded border border-border p-2 text-sm">
+        <div
+          role="status"
+          className="rounded-xl border border-border p-2 text-sm"
+        >
           <p>
             {inspection.status}: {inspection.tickets.length} ticket source(s)
             observed.
@@ -469,7 +475,7 @@ export function WayfinderPanel({
         <>
           <div
             role="status"
-            className="rounded border border-border p-2 text-sm"
+            className="rounded-xl border border-border p-2 text-sm"
           >
             <p>
               <strong>{view.workspaceLabel}</strong> · {view.environmentId} ·{" "}
@@ -514,7 +520,7 @@ export function WayfinderPanel({
                     <li key={ticket.path}>
                       <button
                         type="button"
-                        className={`w-full rounded border p-2 text-left ${ticket.path === selectedPath ? "border-primary" : "border-border"}`}
+                        className={`w-full rounded-xl border p-2 text-left ${ticket.path === selectedPath ? "border-primary" : "border-border"}`}
                         onClick={() => setSelectedPath(ticket.path)}
                       >
                         <span className="font-medium">
@@ -547,7 +553,7 @@ export function WayfinderPanel({
                         <li key={ticket.path}>
                           <button
                             type="button"
-                            className="w-full rounded border border-border p-2 text-left"
+                            className="w-full rounded-xl border border-border p-2 text-left"
                             onClick={() => setSelectedPath(ticket.path)}
                           >
                             <span className="font-medium">
@@ -565,7 +571,7 @@ export function WayfinderPanel({
             </div>
             <article
               aria-label="Selected Wayfinder ticket"
-              className="min-w-0 rounded border border-border p-3"
+              className="min-w-0 rounded-xl border border-border p-3"
             >
               {selected ? (
                 <>

@@ -847,7 +847,7 @@ function Board({ subPath }: PluginNavPanelProps) {
               >
                 <select
                   aria-label="Main repository"
-                  className="max-w-full rounded border border-border bg-background p-2"
+                  className="max-w-full rounded-lg border border-border bg-background p-2"
                   value={source}
                   onChange={(event) => setSource(event.target.value)}
                 >
@@ -917,7 +917,7 @@ function Board({ subPath }: PluginNavPanelProps) {
                   Project{" "}
                   <select
                     aria-label="Capture project"
-                    className="ml-2 rounded border border-border bg-background p-2"
+                    className="ml-2 rounded-lg border border-border bg-background p-2"
                     value={project}
                     onChange={(event) => setProject(event.target.value)}
                   >
@@ -943,7 +943,7 @@ function Board({ subPath }: PluginNavPanelProps) {
                 <textarea
                   aria-label="Markdown description"
                   placeholder="Description (Markdown)"
-                  className="min-h-64 max-h-[60vh] resize-y rounded border border-border bg-background p-3"
+                  className="min-h-64 max-h-[60vh] resize-y rounded-xl border border-border bg-background p-3"
                   maxLength={65536}
                   value={description}
                   onChange={(event) => setDescription(event.target.value)}
@@ -1082,7 +1082,7 @@ function Board({ subPath }: PluginNavPanelProps) {
               )}
               {data?.backup && (
                 <div
-                  className="my-2 flex flex-wrap items-center gap-2 rounded border border-border p-2 text-sm"
+                  className="my-2 flex flex-wrap items-center gap-2 rounded-xl border border-border p-2 text-sm"
                   aria-label="Backup health"
                 >
                   <span role="status">
@@ -1114,7 +1114,7 @@ function Board({ subPath }: PluginNavPanelProps) {
               )}
               {data && (
                 <section
-                  className="rounded border border-border p-3 text-sm"
+                  className="rounded-xl border border-border p-3 text-sm"
                   aria-label="Restore dataset"
                 >
                   <h3 className="font-semibold">Restore a dataset archive</h3>
@@ -1168,7 +1168,7 @@ function Board({ subPath }: PluginNavPanelProps) {
                   </form>
                   {restorePreview && (
                     <div
-                      className="mt-2 rounded border border-border p-2"
+                      className="mt-2 rounded-xl border border-border p-2"
                       role="status"
                       aria-label="Restore preview"
                     >
@@ -1395,7 +1395,7 @@ function Board({ subPath }: PluginNavPanelProps) {
             {draftConflict && (
               <div
                 role="alert"
-                className="my-3 rounded border border-destructive p-3"
+                className="my-3 rounded-xl border border-destructive p-3"
               >
                 <p>This task changed elsewhere. Your draft is preserved.</p>
                 <div className="mt-2 flex flex-wrap gap-2">
@@ -1446,7 +1446,7 @@ function Board({ subPath }: PluginNavPanelProps) {
                   <textarea
                     autoFocus
                     aria-label="Edit Markdown description"
-                    className="block min-h-64 w-full resize-y rounded border border-border bg-background p-3"
+                    className="block min-h-64 w-full resize-y rounded-xl border border-border bg-background p-3"
                     value={editDescription}
                     maxLength={65536}
                     onChange={(event) => setEditDescription(event.target.value)}
@@ -1514,7 +1514,7 @@ function Board({ subPath }: PluginNavPanelProps) {
                 Move to stage{" "}
                 <select
                   aria-label="Move to stage"
-                  className="block rounded border border-border bg-background p-2"
+                  className="block rounded-lg border border-border bg-background p-2"
                   value={nextStatus}
                   onChange={(event) =>
                     setNextStatus(event.target.value as typeof nextStatus)
@@ -1531,7 +1531,7 @@ function Board({ subPath }: PluginNavPanelProps) {
                   Required blocker reason{" "}
                   <textarea
                     aria-label="Required blocker reason"
-                    className="block min-h-20 w-full rounded border border-border bg-background p-2"
+                    className="block min-h-20 w-full rounded-xl border border-border bg-background p-2"
                     value={blockerReason}
                     maxLength={2000}
                     onChange={(event) => setBlockerReason(event.target.value)}
@@ -1655,7 +1655,7 @@ function Board({ subPath }: PluginNavPanelProps) {
               </p>
               <textarea
                 aria-label="Attached path references"
-                className="min-h-24 rounded border border-border bg-background p-2 font-mono text-sm"
+                className="min-h-24 rounded-xl border border-border bg-background p-2 font-mono text-sm"
                 value={pathLines}
                 onChange={(event) => setPathLines(event.target.value)}
               />
@@ -1663,12 +1663,12 @@ function Board({ subPath }: PluginNavPanelProps) {
                 Save paths
               </Button>
             </form>
-            <section className="mt-6 grid gap-3 rounded border border-border p-3">
+            <section className="mt-6 grid gap-3 rounded-xl border border-border p-3">
               <h3 className="font-semibold">Repository preparation</h3>
               {repositoryConflict && (
                 <div
                   role="alert"
-                  className="rounded border border-destructive p-3"
+                  className="rounded-xl border border-destructive p-3"
                 >
                   <p>
                     Repository preparation changed elsewhere. Your branch draft
@@ -1743,7 +1743,7 @@ function Board({ subPath }: PluginNavPanelProps) {
               </dl>
               <div
                 role="status"
-                className="rounded border border-border p-2 text-sm"
+                className="rounded-xl border border-border p-2 text-sm"
               >
                 <p>
                   <strong>
@@ -1841,7 +1841,7 @@ function Board({ subPath }: PluginNavPanelProps) {
                   Explicit action{" "}
                   <select
                     aria-label="Repository preparation action"
-                    className="block rounded border border-border bg-background p-2"
+                    className="block rounded-lg border border-border bg-background p-2"
                     value={repositoryAction}
                     onChange={(event) =>
                       setRepositoryAction(
@@ -1915,7 +1915,7 @@ function Board({ subPath }: PluginNavPanelProps) {
                 {correctionConflict && (
                   <div
                     role="alert"
-                    className="mt-2 rounded border border-destructive p-3"
+                    className="mt-2 rounded-xl border border-destructive p-3"
                   >
                     <p>
                       Enrollment or dataset identity changed elsewhere. Your
@@ -1993,7 +1993,7 @@ function Board({ subPath }: PluginNavPanelProps) {
                 >
                   <select
                     aria-label="Replacement main repository"
-                    className="rounded border border-border bg-background p-2"
+                    className="rounded-lg border border-border bg-background p-2"
                     value={correctionSource}
                     onChange={(event) =>
                       setCorrectionSource(event.target.value)
@@ -2040,7 +2040,7 @@ function Board({ subPath }: PluginNavPanelProps) {
             </section>
           </div>
           <div hidden={taskSection !== "Threads"}>
-            <section className="mt-6 rounded border border-border p-3">
+            <section className="mt-6 rounded-xl border border-border p-3">
               <h3 className="font-semibold">Linked BB conversations</h3>
               <div className="mt-4">
                 <Dialog open={newThreadOpen} onOpenChange={setNewThreadOpen}>
@@ -2083,7 +2083,7 @@ function Board({ subPath }: PluginNavPanelProps) {
                   </p>
                 )}
                 {currentStart && (
-                  <div className="mt-3 rounded border border-border p-3">
+                  <div className="mt-3 rounded-xl border border-border p-3">
                     <p>
                       Durable start {currentStart.id} · {currentStart.state}
                     </p>
@@ -2422,7 +2422,7 @@ function Board({ subPath }: PluginNavPanelProps) {
                 </Button>
               </form>
               {linkCandidate && linkCandidate.threadId === linkDraft.trim() && (
-                <div className="mt-3 rounded border border-border p-3">
+                <div className="mt-3 rounded-xl border border-border p-3">
                   <p>
                     {linkCandidate.title ?? linkCandidate.threadId} ·{" "}
                     {linkCandidate.availability} · {linkCandidate.runtimeStatus}
@@ -2491,7 +2491,7 @@ function Board({ subPath }: PluginNavPanelProps) {
                 {selected.linkedThreads.map((link) => (
                   <article
                     key={link.threadId}
-                    className="rounded border border-border p-3"
+                    className="rounded-xl border border-border p-3"
                   >
                     <p>
                       {link.lastKnownTitle ?? link.threadId} ·{" "}
@@ -2641,7 +2641,7 @@ function Board({ subPath }: PluginNavPanelProps) {
             {memoryDraftConflict && (
               <div
                 role="alert"
-                className="my-3 rounded border border-destructive p-3"
+                className="my-3 rounded-xl border border-destructive p-3"
               >
                 <p>
                   Canonical memory changed while your draft was dirty. The draft
@@ -2748,7 +2748,7 @@ function Board({ subPath }: PluginNavPanelProps) {
                     Canonical Markdown editor{" "}
                     <textarea
                       aria-label="Edit task memory Markdown"
-                      className="block min-h-48 w-full rounded border border-border bg-background p-2"
+                      className="block min-h-48 w-full rounded-xl border border-border bg-background p-2"
                       value={memoryDraft}
                       disabled={busy}
                       onChange={(event) => {
@@ -2783,7 +2783,7 @@ function Board({ subPath }: PluginNavPanelProps) {
               </>
             )}
             {memoryView?.state === "pending" && (
-              <div role="alert" className="mt-2 rounded border p-3">
+              <div role="alert" className="mt-2 rounded-xl border p-3">
                 <p>Memory operation {memoryView.operationId} is pending.</p>
                 <p>{memoryView.message}</p>
                 <Button
@@ -2798,7 +2798,7 @@ function Board({ subPath }: PluginNavPanelProps) {
             {memoryView?.state === "conflict" && (
               <div
                 role="alert"
-                className="mt-2 rounded border border-destructive p-3"
+                className="mt-2 rounded-xl border border-destructive p-3"
               >
                 <p>
                   Memory conflict ({memoryView.reason}). External attribution is
@@ -2889,7 +2889,7 @@ function Board({ subPath }: PluginNavPanelProps) {
                       Verified known Markdown bytes{" "}
                       <textarea
                         aria-label="Verified known task memory"
-                        className="block min-h-32 w-full rounded border border-border bg-background p-2"
+                        className="block min-h-32 w-full rounded-xl border border-border bg-background p-2"
                         value={memoryRestoreKnown}
                         onChange={(event) =>
                           setMemoryRestoreKnown(event.target.value)
