@@ -79,6 +79,54 @@ function uiTask(overrides: Partial<Task> = {}): Task {
     ...overrides,
   };
 }
+
+test("plugin surfaces use a consistent generous radius hierarchy", async () => {
+  const app = await loadPluginApp(() => import("./app"));
+  const enrollmentId = randomUUID();
+  const slot = renderSlot(
+    app.navPanels[0]!,
+    { subPath: "" },
+    {
+      rpc: {
+        list: () => ({
+          datasetEpoch: randomUUID(),
+          enrollments: [
+            {
+              id: enrollmentId,
+              name: "Fixture",
+              prefix: "FX",
+              availability: "available",
+            },
+          ],
+          tasks: [uiTask({ enrollmentId })],
+          candidates: [],
+          discoveryError: null,
+        }),
+      },
+    },
+  );
+  try {
+    const task = await slot.findByRole("button", { name: /Active task/ });
+    expect(slot.getByLabelText("Task workspace list").className).toContain(
+      "rounded-xl",
+    );
+    expect(task.className).toContain("bg-secondary");
+    expect(slot.getByLabelText("Search tasks").className).toContain(
+      "rounded-lg",
+    );
+
+    fireEvent.click(slot.getByRole("button", { name: "Create task" }));
+    const dialog = await slot.findByRole("dialog", { name: "Create task" });
+    expect(dialog.className).toContain("sm:rounded-xl");
+    expect(slot.getByLabelText("Task title").className).toContain("rounded-lg");
+    expect(slot.getByLabelText("Markdown description").className).toContain(
+      "rounded-xl",
+    );
+  } finally {
+    slot.lifecycle.unmount();
+  }
+});
+
 test("board captures Markdown, opens drawer and preserves drafts on failure", async () => {
   const app = await loadPluginApp(() => import("./app"));
   const id = randomUUID();
@@ -982,10 +1030,11 @@ test("filters, Completed visibility, deep links and narrow keyboard drawer remai
     { rpc: { list: () => data } },
   );
   try {
-    await board.findByText("Active task");
+    await board.findByRole("button", { name: "ONE-1: Active task" });
     expect(board.queryByText("Completed task")).toBeNull();
     fireEvent.click(board.getByLabelText("Show Completed"));
-    await board.findByText("Completed task");
+    fireEvent.click(board.getByRole("button", { name: "Completed1" }));
+    await board.findByRole("button", { name: "TWO-1: Completed task" });
     fireEvent.change(board.getByLabelText("Search tasks"), {
       target: { value: "TWO-1" },
     });
@@ -1018,6 +1067,71 @@ test("filters, Completed visibility, deep links and narrow keyboard drawer remai
     });
   } finally {
     deepLink.lifecycle.unmount();
+  }
+});
+
+test("list view previews connected threads and keeps the optional board contained", async () => {
+  const app = await loadPluginApp(() => import("./app"));
+  const enrollmentId = randomUUID();
+  const active = uiTask({
+    enrollmentId,
+    linkedThreads: [
+      {
+        threadId: "thread-preview",
+        linkRevision: 1,
+        linkedAt: new Date().toISOString(),
+        lastKnownTitle: "Implementation conversation",
+        lastKnownProjectId: "project-ui",
+        lastKnownEnvironmentId: "env-ui",
+        lastKnownHostId: "host-ui",
+        availability: "available",
+        runtimeStatus: "active",
+        environmentMismatch: null,
+        message:
+          "Conversation and task repository environment currently match.",
+      },
+    ],
+  });
+  const slot = renderSlot(
+    app.navPanels[0]!,
+    { subPath: "" },
+    {
+      rpc: {
+        list: () => ({
+          datasetEpoch: randomUUID(),
+          enrollments: [
+            {
+              id: enrollmentId,
+              name: "Fixture",
+              prefix: "FX",
+              availability: "available",
+            },
+          ],
+          tasks: [active],
+          candidates: [],
+          discoveryError: null,
+        }),
+      },
+    },
+  );
+  try {
+    const preview = await slot.findByLabelText("Selected task preview");
+    expect(within(preview).getByText("Connected threads")).toBeTruthy();
+    const thread = within(preview).getByRole("button", {
+      name: /Implementation conversation/,
+    });
+    fireEvent.click(thread);
+    expect(slot.inspection.navigateCalls).toContainEqual({
+      method: "toThread",
+      threadId: "thread-preview",
+    });
+
+    fireEvent.click(slot.getByRole("button", { name: "board" }));
+    const board = slot.getByLabelText("Task board");
+    expect(board.className).toContain("min-h-0");
+    expect(within(board).getByText("Active task")).toBeTruthy();
+  } finally {
+    slot.lifecycle.unmount();
   }
 });
 
@@ -1056,11 +1170,11 @@ test("a delayed refresh cannot replace a newer realtime snapshot", async () => {
   try {
     await waitFor(() => expect(listCalls).toBe(1));
     await slot.behavior.emitRealtime("changed", {});
-    await slot.findByText("Newest snapshot");
+    await slot.findByRole("button", { name: /Newest snapshot/ });
     resolveOld(older);
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(slot.queryByText("Delayed old snapshot")).toBeNull();
-    expect(slot.getByText("Newest snapshot")).toBeTruthy();
+    expect(slot.getByRole("button", { name: /Newest snapshot/ })).toBeTruthy();
   } finally {
     slot.lifecycle.unmount();
   }
